@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "madne"
+version = "0.1.0"
+description = "Multi-Agent Dynamic Narrative Engine - 多 Agent 动态叙事引擎"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+madne = "madne.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["madne*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
