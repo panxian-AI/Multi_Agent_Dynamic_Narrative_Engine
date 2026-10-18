@@ -141,6 +141,6 @@ def test_player_interface_renders_illustration(tmp_path, monkeypatch):
         assert app._player_image is not None
         assert app._player_image.width() == 64
         assert app._player_image.height() == 64
-        assert app._player_image_label.winfo_manager() == "pack"
+        assert app._player_image_label.winfo_manager() == "grid"
     finally:
         app.destroy()

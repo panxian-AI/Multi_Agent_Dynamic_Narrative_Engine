@@ -722,8 +722,10 @@ class MadneApp(tk.Tk):
         self._player_api_btn.pack(anchor="w", pady=(12, 0))
 
         self._player_story_frame = ttk.Frame(self._player_frame)
+        self._player_story_frame.columnconfigure(0, weight=1)
+        self._player_story_frame.rowconfigure(3, weight=1)
         story_header = ttk.Frame(self._player_story_frame)
-        story_header.pack(fill="x")
+        story_header.grid(row=0, column=0, sticky="ew")
         ttk.Label(
             story_header, text="故事", style="PlayerTitle.TLabel"
         ).pack(side="left")
@@ -739,7 +741,9 @@ class MadneApp(tk.Tk):
             style="PlayerSubtitle.TLabel",
             wraplength=1000,
         )
-        self._player_status_label.pack(anchor="w", pady=(2, 8))
+        self._player_status_label.grid(
+            row=1, column=0, sticky="w", pady=(2, 8)
+        )
         self._player_image_label = ttk.Label(
             self._player_story_frame, anchor="center"
         )
@@ -752,9 +756,12 @@ class MadneApp(tk.Tk):
             bg="#fbfbfb",
             relief="flat",
         )
-        self._player_story_text.pack(fill="both", expand=True)
+        self._player_story_text.grid(row=3, column=0, sticky="nsew")
+        # 选项固定在第 4 行，故事文本伸缩，避免选项被挤出窗口。
         self._player_choices_frame = ttk.Frame(self._player_story_frame)
-        self._player_choices_frame.pack(fill="x", pady=(12, 0))
+        self._player_choices_frame.grid(
+            row=4, column=0, sticky="ew", pady=(12, 0)
+        )
 
     # ------------------------------------------------------------------ 界面切换
     def _apply_ui_mode(self) -> None:
@@ -836,7 +843,7 @@ class MadneApp(tk.Tk):
 
     def _clear_player_result(self) -> None:
         self._set_text(self._player_story_text, "")
-        self._player_image_label.pack_forget()
+        self._player_image_label.grid_remove()
         self._player_image = None
         for child in self._player_choices_frame.winfo_children():
             child.destroy()
@@ -844,32 +851,37 @@ class MadneApp(tk.Tk):
     def _render_player_illustration(self, output: GameOutput) -> None:
         illustration = output.illustration
         if illustration is None:
-            self._player_image_label.pack_forget()
+            self._player_image_label.grid_remove()
             self._player_image = None
             return
         path = DATA_DIR / illustration.relative_path
         if not path.exists():
-            self._player_image_label.pack_forget()
+            self._player_image_label.grid_remove()
             self._player_image = None
             return
         try:
             photo = tk.PhotoImage(file=str(path))
         except tk.TclError as exc:
-            self._player_image_label.pack_forget()
+            self._player_image_label.grid_remove()
             self._player_image = None
             self._append_log_text(f"插图加载失败：{exc}")
             return
 
-        # Tk 只支持整数倍缩放；把大图缩小到 720px 内，避免撑破窗口。
+        # Tk 只支持整数倍缩放；同时限制宽高，避免插图把故事与选项挤出窗口。
         max_width = 720
-        factor = max(1, (photo.width() + max_width - 1) // max_width)
+        max_height = 260
+        factor = max(
+            1,
+            (photo.width() + max_width - 1) // max_width,
+            (photo.height() + max_height - 1) // max_height,
+        )
         if factor > 1:
             photo = photo.subsample(factor, factor)
         self._player_image = photo
         self._player_image_label.configure(image=photo)
         self._player_image_label.image = photo
-        self._player_image_label.pack(
-            fill="x", pady=(0, 10), before=self._player_story_text
+        self._player_image_label.grid(
+            row=2, column=0, sticky="ew", pady=(0, 10)
         )
 
     def _render_player_output(self, output: GameOutput) -> None:
