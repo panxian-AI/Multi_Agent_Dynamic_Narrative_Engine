@@ -4,12 +4,15 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 from madne.config import Settings
 from madne.engine.orchestrator import Orchestrator
 from madne.exceptions import ImageGenError
 from madne.image import ImageRequest, build_scene_prompt, create_image_client
 from madne.image.comfyui import ComfyUIImageGenerator
 from madne.image.factory import FallbackImageGenerator
+from madne.image.hunyuan import HunyuanImageGenerator
 from madne.image.mock import render_placeholder_png
 from madne.llm import MockLLMClient
 from madne.models import NPCProfile, PlayerInput, SceneOutline
@@ -63,7 +66,29 @@ def test_scene_prompt_contains_character_appearance():
     assert "charcoal trench coat" in prompt
     assert "霓虹灯下的旧城咖啡馆" in prompt
 
+    compact = build_scene_prompt(
+        scene, None, [npc], style="cinematic", max_chars=256
+    )
+    assert len(compact) <= 256
+    assert "林默" in compact
 
+
+
+
+def test_hunyuan_factory_uses_api_config():
+    client = create_image_client(
+        Settings(
+            use_mock=True,
+            img_backend="hunyuan",
+            img_api_key="sk-image-test",
+            img_base_url="https://image.example/v1",
+            img_api_model="hunyuan-image-lite",
+        )
+    )
+
+    health = client.health()
+    assert health["backend"] == "hunyuan"
+    assert health["available"] is True
 def test_unknown_backend_falls_back_to_mock():
     client = create_image_client(
         Settings(use_mock=True, img_backend="not-a-backend")
@@ -221,3 +246,97 @@ def test_comfyui_client_roundtrip(tmp_path: Path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def _hunyuan_handler(png: bytes):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # noqa: ANN002
+            return
+
+        def _send_json(self, payload: dict) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if self.path != "/v1/images/generations":
+                self.send_response(404)
+                self.end_headers()
+                return
+            assert payload["model"] == "hunyuan-image-lite"
+            assert payload["size"] == "128x72"
+            port = self.server.server_address[1]
+            self._send_json(
+                {
+                    "data": [
+                        {"url": f"http://127.0.0.1:{port}/image.png"}
+                    ]
+                }
+            )
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/image.png":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.end_headers()
+                self.wfile.write(png)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    return Handler
+
+
+def test_hunyuan_client_downloads_generated_image(tmp_path: Path):
+    png = render_placeholder_png(128, 72, 11)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), _hunyuan_handler(png)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HunyuanImageGenerator(
+            api_key="sk-image-test",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}/v1",
+            model="hunyuan-image-lite",
+            timeout=10,
+        )
+        target = tmp_path / "hunyuan.png"
+        result = client.generate(
+            ImageRequest(
+                prompt="雨夜咖啡馆里的侦探",
+                negative_prompt="模糊，水印",
+                output_path=target,
+                width=128,
+                height=72,
+                seed=3,
+            )
+        )
+
+        assert result.backend == "hunyuan"
+        assert (result.width, result.height) == (128, 72)
+        assert target.read_bytes() == png
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_hunyuan_client_requires_api_key(tmp_path: Path):
+    client = HunyuanImageGenerator(api_key="")
+
+    with pytest.raises(ImageGenError):
+        client.generate(
+            ImageRequest(
+                prompt="test",
+                output_path=tmp_path / "missing.png",
+                width=128,
+                height=72,
+            )
+        )

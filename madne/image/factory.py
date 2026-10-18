@@ -8,6 +8,7 @@ from ..config import Settings
 from .base import ImageGenClient, ImageRequest, ImageResult
 from .comfyui import ComfyUIImageGenerator
 from .diffusers import DiffusersImageGenerator
+from .hunyuan import HunyuanImageGenerator
 from .mock import MockImageGenerator
 
 
@@ -67,11 +68,22 @@ def create_image_client(settings: Settings) -> ImageGenClient:
             )
         )
 
+    if backend in {"hunyuan", "openai", "openai_compat"}:
+        return FallbackImageGenerator(
+            HunyuanImageGenerator(
+                api_key=settings.img_api_key or "",
+                base_url=settings.img_base_url,
+                model=settings.img_api_model,
+                timeout=settings.img_api_timeout,
+                max_retries=settings.img_api_retries,
+            )
+        )
+
     if backend not in {"mock", ""}:
         return MockImageGenerator(
             fallback_reason=(
                 f"未知 IMG_BACKEND='{settings.img_backend}'，已回退 mock。"
-                "可用值：mock / comfyui / diffusers"
+                "可用值：mock / hunyuan / comfyui / diffusers"
             )
         )
     return MockImageGenerator()

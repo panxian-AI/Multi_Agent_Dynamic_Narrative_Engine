@@ -2,10 +2,12 @@
 
 from .base import ImageGenClient, ImageRequest, ImageResult
 from .factory import FallbackImageGenerator, create_image_client
+from .hunyuan import HunyuanImageGenerator
 from .prompts import build_negative_prompt, build_scene_prompt
 
 __all__ = [
     "FallbackImageGenerator",
+    "HunyuanImageGenerator",
     "ImageGenClient",
     "ImageRequest",
     "ImageResult",

@@ -23,14 +23,18 @@ from madne.config import Settings
 from madne.engine.orchestrator import Orchestrator
 from madne.engine.run_log import RunLogEntry
 from madne.exceptions import ConfigError
+from madne.image import create_image_client
 from madne.llm import MockLLMClient, OpenAICompatClient, create_llm_client
 from madne.models import Branch, GameOutput, PlayerInput
 from madne.user_config import (
     ApiConfig,
     DEFAULT_BASE_URL,
+    DEFAULT_IMG_BASE_URL,
+    DEFAULT_IMG_HEIGHT,
+    DEFAULT_IMG_MODEL,
+    DEFAULT_IMG_WIDTH,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
-    apply_api_config,
     clear_api_config,
     config_path,
     load_api_config,
@@ -94,7 +98,7 @@ class ApiConfigDialog(tk.Toplevel):
     ) -> None:
         super().__init__(parent)
         self.title("API 配置 · 使用你自己的 Key")
-        self.geometry("660x500")
+        self.geometry("720x780")
         self.resizable(False, False)
         self.transient(parent)
         try:
@@ -112,6 +116,15 @@ class ApiConfigDialog(tk.Toplevel):
         self._max_tokens_var = tk.IntVar(value=self._config.max_tokens)
         self._admin_code_var = tk.StringVar(value="")
         self._show_key_var = tk.BooleanVar(value=False)
+
+        self._img_enabled_var = tk.BooleanVar(value=self._config.img_enabled)
+        self._img_key_var = tk.StringVar(value=self._config.img_api_key)
+        self._img_base_var = tk.StringVar(value=self._config.img_base_url)
+        self._img_model_var = tk.StringVar(value=self._config.img_model)
+        self._img_width_var = tk.IntVar(value=self._config.img_width)
+        self._img_height_var = tk.IntVar(value=self._config.img_height)
+        self._show_img_key_var = tk.BooleanVar(value=False)
+
         self._status_var = tk.StringVar(
             value="填写 API Key 后点击“测试连接”或“保存”；管理员可填写邀请码。"
         )
@@ -132,7 +145,7 @@ class ApiConfigDialog(tk.Toplevel):
         )
         ttk.Label(
             frame,
-            text="密钥只保存在本机用户目录，不会写入 exe、日志或分发包。",
+            text="密钥只保存在本机配置文件，不会写入 exe、日志或分发包。",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(2, 12))
 
@@ -200,6 +213,96 @@ class ApiConfigDialog(tk.Toplevel):
             style="Hint.TLabel",
         ).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
+        img_box = ttk.LabelFrame(
+            frame,
+            text="生图 API（混元轻量版 / OpenAI 兼容，可选）",
+            padding=10,
+        )
+        img_box.pack(fill="x", pady=(12, 0))
+        img_box.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            img_box,
+            text="为本回合场景生成 AI 插图",
+            variable=self._img_enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(img_box, text="生图 API Key").grid(
+            row=1, column=0, sticky="w", pady=(8, 0)
+        )
+        img_key_frame = ttk.Frame(img_box)
+        img_key_frame.grid(
+            row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+        img_key_frame.columnconfigure(0, weight=1)
+        self._img_key_entry = ttk.Entry(
+            img_key_frame, textvariable=self._img_key_var, show="•"
+        )
+        self._img_key_entry.grid(row=0, column=0, sticky="ew")
+        ttk.Checkbutton(
+            img_key_frame,
+            text="显示",
+            variable=self._show_img_key_var,
+            command=self._toggle_img_key_visibility,
+        ).grid(row=0, column=1, padx=(6, 0))
+
+        ttk.Label(img_box, text="Base URL").grid(
+            row=2, column=0, sticky="w", pady=(8, 0)
+        )
+        self._img_base_entry = ttk.Entry(
+            img_box, textvariable=self._img_base_var
+        )
+        self._img_base_entry.grid(
+            row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+
+        ttk.Label(img_box, text="模型").grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
+        )
+        self._img_model_entry = ttk.Entry(
+            img_box, textvariable=self._img_model_var
+        )
+        self._img_model_entry.grid(
+            row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+
+        ttk.Label(img_box, text="分辨率").grid(
+            row=4, column=0, sticky="w", pady=(8, 0)
+        )
+        size_frame = ttk.Frame(img_box)
+        size_frame.grid(
+            row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        self._img_width_spin = ttk.Spinbox(
+            size_frame,
+            from_=256,
+            to=4096,
+            increment=64,
+            textvariable=self._img_width_var,
+            width=8,
+        )
+        self._img_width_spin.pack(side="left")
+        ttk.Label(size_frame, text=" × ").pack(side="left")
+        self._img_height_spin = ttk.Spinbox(
+            size_frame,
+            from_=256,
+            to=4096,
+            increment=64,
+            textvariable=self._img_height_var,
+            width=8,
+        )
+        self._img_height_spin.pack(side="left")
+
+        ttk.Label(
+            img_box,
+            text=(
+                "混元轻量版建议 1280×720 或 1920×1080；"
+                "未填生图 Key 时使用 Mock 占位图。"
+            ),
+            style="Hint.TLabel",
+            wraplength=620,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(14, 0))
         self._test_btn = ttk.Button(
@@ -218,9 +321,14 @@ class ApiConfigDialog(tk.Toplevel):
         )
         ttk.Button(
             buttons,
-            text="打开 DeepSeek 控制台",
+            text="LLM 控制台",
             command=self._open_console,
         ).pack(side="left", padx=(18, 0))
+        ttk.Button(
+            buttons,
+            text="生图控制台",
+            command=self._open_image_console,
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(
             buttons, text="清除本机配置", command=self._clear
         ).pack(side="left", padx=(8, 0))
@@ -236,6 +344,11 @@ class ApiConfigDialog(tk.Toplevel):
             style="Hint.TLabel",
             wraplength=610,
         ).pack(anchor="w", pady=(4, 0))
+
+    def _toggle_img_key_visibility(self) -> None:
+        self._img_key_entry.configure(
+            show="" if self._show_img_key_var.get() else "•"
+        )
 
     def _toggle_key_visibility(self) -> None:
         self._key_entry.configure(
@@ -255,6 +368,15 @@ class ApiConfigDialog(tk.Toplevel):
         except (tk.TclError, TypeError, ValueError):
             max_tokens = DEFAULT_MAX_TOKENS
 
+        try:
+            img_width = max(256, int(self._img_width_var.get()))
+        except (tk.TclError, TypeError, ValueError):
+            img_width = DEFAULT_IMG_WIDTH
+        try:
+            img_height = max(256, int(self._img_height_var.get()))
+        except (tk.TclError, TypeError, ValueError):
+            img_height = DEFAULT_IMG_HEIGHT
+
         admin_unlocked = self._config.admin_unlocked
         invite_code = self._admin_code_var.get().strip()
         if invite_code:
@@ -273,6 +395,16 @@ class ApiConfigDialog(tk.Toplevel):
             model=model,
             max_tokens=max_tokens,
             admin_unlocked=admin_unlocked,
+            img_enabled=bool(self._img_enabled_var.get()),
+            img_api_key=self._img_key_var.get().strip(),
+            img_base_url=(
+                self._img_base_var.get().strip() or DEFAULT_IMG_BASE_URL
+            ),
+            img_model=(
+                self._img_model_var.get().strip() or DEFAULT_IMG_MODEL
+            ),
+            img_width=img_width,
+            img_height=img_height,
         )
 
     def _set_busy(self, busy: bool) -> None:
@@ -283,6 +415,11 @@ class ApiConfigDialog(tk.Toplevel):
             self._model_entry,
             self._max_spin,
             self._admin_code_entry,
+            self._img_key_entry,
+            self._img_base_entry,
+            self._img_model_entry,
+            self._img_width_spin,
+            self._img_height_spin,
             self._test_btn,
             self._save_btn,
         ):
@@ -345,7 +482,7 @@ class ApiConfigDialog(tk.Toplevel):
         messagebox.showinfo(
             "已保存",
             f"API 配置已保存到：\n{path}\n\n"
-            f"该文件只在本机用户目录，不会进入 exe 或日志。{extra}",
+            f"该文件只在本机，不会进入 exe 或日志。{extra}",
             parent=self,
         )
         self.destroy()
@@ -361,12 +498,21 @@ class ApiConfigDialog(tk.Toplevel):
         self._config = load_api_config()
         self._key_var.set("")
         self._admin_code_var.set("")
+        self._img_enabled_var.set(self._config.img_enabled)
+        self._img_key_var.set("")
+        self._img_base_var.set(self._config.img_base_url)
+        self._img_model_var.set(self._config.img_model)
+        self._img_width_var.set(self._config.img_width)
+        self._img_height_var.set(self._config.img_height)
         self._status_var.set("已清除本机 API 配置。")
         if self._on_saved is not None:
             self._on_saved()
 
     def _open_console(self) -> None:
         webbrowser.open("https://platform.deepseek.com/api_keys")
+
+    def _open_image_console(self) -> None:
+        webbrowser.open("https://console.cloud.tencent.com/hunyuan")
 
     def _grab(self) -> None:
         try:
@@ -430,7 +576,7 @@ class MadneApp(tk.Tk):
         self._api_config = load_api_config()
         self._api_dialog: ApiConfigDialog | None = None
         self._ui_mode = "admin" if self._api_config.admin_unlocked else "player"
-        initial_settings = Settings.from_env()
+        initial_settings = load_app_settings()
         self._prompt_var = tk.StringVar(value=DEFAULT_PROMPT)
         self._session_var = tk.StringVar(value=_unique_session_id())
         self._player_setup_visible = True
@@ -1066,7 +1212,7 @@ class MadneApp(tk.Tk):
             return None
 
     def _make_settings(self) -> Settings:
-        base = apply_api_config(Settings.from_env())
+        base = load_app_settings()
         return replace(
             base,
             data_dir=DATA_DIR,
@@ -1077,20 +1223,29 @@ class MadneApp(tk.Tk):
 
     def _refresh_api_status(self) -> None:
         config = load_api_config()
+        img_status = (
+            "混元生图已配置"
+            if config.img_configured
+            else ("生图：Mock 占位图" if config.img_enabled else "生图：已关闭")
+        )
         if config.configured:
             self._api_status_var.set(
-                f"API：已配置 {config.model}（本机用户配置）"
+                f"API：已配置 {config.model}（本机配置）；{img_status}"
             )
             return
-        base = Settings.from_env()
+        base = load_app_settings()
         if base.llm_api_key:
-            self._api_status_var.set(f"API：使用 .env 配置 {base.llm_model}")
+            self._api_status_var.set(
+                f"API：使用本机/环境配置 {base.llm_model}；{img_status}"
+            )
         else:
-            self._api_status_var.set("API：未配置（可先使用 Mock 演示）")
+            self._api_status_var.set(
+                f"API：未配置（可先使用 Mock 演示）；{img_status}"
+            )
 
     def _startup_config_check(self) -> None:
         config = load_api_config()
-        if config.configured or Settings.from_env().llm_api_key:
+        if config.configured or load_app_settings().llm_api_key:
             return
         self._mode_var.set("Mock 演示")
         self._status_var.set(
@@ -1118,10 +1273,31 @@ class MadneApp(tk.Tk):
         was_admin = self._ui_mode == "admin"
         self._api_config = load_api_config()
         self._refresh_api_status()
+
+        # 让当前会话立即使用新保存的生图配置（无需重开故事）
+        if self._orchestrator is not None:
+            updated = self._make_settings()
+            self._orchestrator.settings = replace(
+                self._orchestrator.settings,
+                img_enabled=updated.img_enabled,
+                img_backend=updated.img_backend,
+                img_api_key=updated.img_api_key,
+                img_base_url=updated.img_base_url,
+                img_api_model=updated.img_api_model,
+                img_width=updated.img_width,
+                img_height=updated.img_height,
+                img_style=updated.img_style,
+            )
+            self._orchestrator.image_client = (
+                create_image_client(self._orchestrator.settings)
+                if self._orchestrator.settings.img_enabled
+                else None
+            )
+
         if self._api_config.configured:
             self._mode_var.set("真实模型")
             self._status_var.set("API 配置已保存，可以开始生成")
-        elif Settings.from_env().llm_api_key:
+        elif load_app_settings().llm_api_key:
             self._mode_var.set("真实模型")
             self._status_var.set("本机配置已清除，将使用 .env 中的 API 配置")
         else:

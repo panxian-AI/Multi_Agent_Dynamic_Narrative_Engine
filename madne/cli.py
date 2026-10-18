@@ -276,6 +276,18 @@ def image(
         else []
     )
     prompt = build_scene_prompt(scene, world, npcs, settings.img_style)
+    prompt_limit = (
+        256
+        if settings.img_backend in {"hunyuan", "openai", "openai_compat"}
+        else None
+    )
+    prompt = build_scene_prompt(
+        scene,
+        world,
+        npcs,
+        settings.img_style,
+        max_chars=prompt_limit,
+    )
     seed = settings.img_seed
     if seed is None:
         seed = int(
@@ -307,7 +319,7 @@ def image(
     result = client.generate(
         ImageRequest(
             prompt=prompt,
-            negative_prompt=build_negative_prompt(),
+            negative_prompt=build_negative_prompt(max_chars=prompt_limit),
             output_path=target,
             width=settings.img_width,
             height=settings.img_height,

@@ -617,8 +617,19 @@ class Orchestrator:
         profiles = [npc for npc in raw_npcs if isinstance(npc, NPCProfile)]
         involved = select_involved_npcs(scene, profiles)
 
+        # 混元轻量版 Prompt/NegativePrompt 最长 256 字符
+        prompt_limit = (
+            256
+            if self.settings.img_backend
+            in {"hunyuan", "openai", "openai_compat"}
+            else None
+        )
         prompt = build_scene_prompt(
-            scene, world, profiles, self.settings.img_style
+            scene,
+            world,
+            profiles,
+            self.settings.img_style,
+            max_chars=prompt_limit,
         )
         requested_mode = (
             self.settings.img_consistency_mode or "self_attn"
@@ -652,7 +663,9 @@ class Orchestrator:
             result = self.image_client.generate(
                 ImageRequest(
                     prompt=prompt,
-                    negative_prompt=build_negative_prompt(),
+                    negative_prompt=build_negative_prompt(
+                        max_chars=prompt_limit
+                    ),
                     output_path=target,
                     width=self.settings.img_width,
                     height=self.settings.img_height,

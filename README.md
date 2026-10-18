@@ -65,8 +65,10 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 - `OpenAICompatClient` 通过标准 Chat Completions 接口调用，无第三方 HTTP 依赖；DeepSeek 只需配置兼容 Base URL 与 `deepseek-chat`。
 - 未设置 `MADNE_MOCK` 且没有 API Key 时自动回退 Mock，保证 Demo 可运行。
 
-以上 `.env` 方式主要面向 **CLI 与开发**。桌面 EXE 的 Key 由每位使用者在
-「API 配置」窗口中自行输入，保存到 `%APPDATA%\MADNE\config.json`（无 APPDATA 时回退 `~/.madne/config.json`），因此分发时不需要附带任何 `.env`。
+以上 `.env` 方式主要面向 **CLI 与开发**。打包后的 `MADNE.exe` 不读取 `.env`，
+也不读取构建机的 `%APPDATA%` 配置；它只使用 exe 同目录的便携配置
+`config/config.json`。每位使用者在「API 配置」窗口输入自己的 Key，
+分发时不要附带 `.env` 或 `config` 目录。
 
 ## 场景插图（多模态）
 
@@ -84,8 +86,41 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 | 值 | 依赖 | 说明 |
 |---|---|---|
 | `mock`（默认） | 无 | 纯标准库生成占位 PNG，CI / 无 GPU 可用 |
+| `hunyuan` | 混元生图轻量版 / OpenAI 兼容图像 API | 在「API 配置」窗口的“生图 API”区域填写 Key、Base URL、模型与分辨率 |
 | `comfyui` | 部署方的 ComfyUI 实例 | 通过 `COMFYUI_URL` 提交工作流；自定义 InstantID 工作流可使用 `{{REFERENCE_IMAGE}}` 占位符 |
 | `diffusers` | 本地 GPU + torch/diffusers | SDXL；`id_injection` 可用 `IMG_IP_ADAPTER_DIR` 注入角色定妆照 |
+
+每个回合（也就是每次显示新行动选项的界面）都会根据当前 `SceneOutline` 的
+场景、动作和 `involved_npcs` 的外观生成一张插图；插图会出现在玩家界面
+故事正文上方，并写入 `GameOutput.illustration`。
+
+### 混元生图轻量版
+
+桌面版的推荐配置方式：
+
+1. 打开「API 配置」窗口；
+2. 在“生图 API（混元轻量版 / OpenAI 兼容）”区域填写生图 API Key；
+3. 默认 Base URL 为 `https://api.hunyuan.cloud.tencent.com/v1`，模型为
+   `hunyuan-image-lite`；如果你使用的是第三方 OpenAI 兼容中转，请填写
+   服务商实际的 Base URL 和模型名；
+4. 分辨率建议 `1280×720` 或 `1920×1080`；
+5. 保存后，后续每个回合都会尝试调用生图 API；失败会自动回退 Mock 占位图，
+   不会中断文本生成。
+
+源码 / CLI 也可以用环境变量：
+
+```dotenv
+IMG_BACKEND=hunyuan
+IMG_API_KEY=sk-your-image-key
+IMG_BASE_URL=https://api.hunyuan.cloud.tencent.com/v1
+IMG_API_MODEL=hunyuan-image-lite
+IMG_WIDTH=1280
+IMG_HEIGHT=720
+```
+
+> 混元轻量版的 Prompt / NegativePrompt 上限为 256 字符，代码会自动使用
+> 精简提示词并截断。若你的服务商使用腾讯云签名接口（SecretId/SecretKey），
+> 需要通过 OpenAI 兼容网关转换后再接入。
 
 仓库内置了一份可直接编辑的 API 格式工作流模板
 `comfyui/sdxl_basic_workflow.json`，设置
@@ -137,14 +172,17 @@ python -m madne run --mock -i "..." --no-illustrate
   故事中可通过“新的故事”返回开始页。
 - **独立「API 配置」窗口**：首次启动若本机没有 Key 会自动弹出；
   玩家开始页也有「API 设置」按钮，故事中可按 `F11`（或 `Ctrl+Shift+K`）打开。
-  - 输入自己的 API Key（默认掩码显示，可切换显示）；
+  - 输入自己的 LLM API Key（默认掩码显示，可切换显示）；
   - 可修改 Base URL、模型名与最大 Token；
+  - “生图 API”区域可填写混元生图轻量版 / OpenAI 兼容图像接口的 Key、
+    Base URL、模型和分辨率；
   - 窗口下方有**可选的管理员邀请码**：普通玩家留空；
     输入 `admin` 并保存后解锁管理员界面；
-  - “测试连接”会用当前输入发一次极小请求，成功后再保存；
-  - Key 仅保存在本机 `%APPDATA%\MADNE\config.json`，不会写入 exe、日志或输出目录。
-- 生成完成后，玩家界面在故事下方显示行动选项；选项只显示行动描述，
-  不显示分支 ID、风险等级或任何审查/运行元数据。
+  - “测试连接”会用当前输入发一次极小 LLM 请求，成功后再保存；
+  - Key 仅保存在 exe 同目录 `config\config.json`，不会写入 exe、日志或
+    输出目录；打包版不会读取 `.env` 或构建机的 `%APPDATA%` 配置。
+- 生成完成后，玩家界面在故事正文上方显示本回合插图，在下方显示行动选项；
+  选项只显示行动描述，不显示分支 ID、风险等级或任何审查/运行元数据。
 
 ### 玩家界面 / 管理员界面
 
@@ -169,8 +207,10 @@ python -m madne run --mock -i "..." --no-illustrate
 
 1. 运行 `build_exe.ps1` 重新构建；
 2. 把 `dist\MADNE.exe`（以及可选的 `dist\README.md`）发给测试者；
-3. **不要附带 `.env`**：构建脚本已不再复制它，测试者在「API 配置」窗口输入自己的 Key；
-4. 每位测试者的 Key 只存在自己的电脑上，互不影响，也不会打进 exe；
+3. **不要附带 `.env` 或 `dist\config`**：exe 不读取 `.env`，也不会继承构建机的
+   `%APPDATA%` 配置；`dist\config` 是本机用户保存 Key 的便携目录，只供自己使用；
+4. 测试者首次运行会在「API 配置」窗口输入自己的 LLM Key 和生图 Key；
+   Key 只保存在测试者电脑上的 `config\config.json`；
 5. 普通测试者无需填写管理员邀请码，默认就是玩家界面。
 
 如果测试者需要重置 Key，在玩家界面按 `F11` 打开「API 配置」→
@@ -234,6 +274,7 @@ madne/
 ├── memory/system.py          # M10 完整记忆 + 压缩记忆合并
 ├── image/                    # 图像生成子系统
 │   ├── base.py               # ImageGenClient / 请求结果契约
+│   ├── hunyuan.py            # 混元生图轻量版 / OpenAI 兼容图像 API
 │   ├── mock.py               # 零依赖占位 PNG
 │   ├── comfyui.py            # ComfyUI HTTP 后端
 │   ├── diffusers.py          # 本地 SDXL + IP-Adapter

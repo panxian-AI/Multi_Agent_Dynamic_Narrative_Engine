@@ -36,14 +36,18 @@ def _load_dotenv(path: Path) -> None:
 
 
 def _load_project_dotenv() -> None:
-    candidates: list[Path] = []
+    """只允许源码/CLI 读取项目 .env。
+
+    打包后的 exe 不读取 .env：避免构建者本机的 Key 被自动带进分发包，
+    桌面端只使用「API 配置」窗口保存的本机配置。
+    """
     if getattr(sys, "frozen", False):
-        # 打包后的 exe：只读取 exe 同目录的 .env，避免误读外部目录的 Key
-        candidates.append(Path(sys.executable).resolve().parent / ".env")
-    else:
-        candidates.extend(
-            [Path.cwd() / ".env", Path(__file__).resolve().parent.parent / ".env"]
-        )
+        return
+
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    ]
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -136,6 +140,13 @@ class Settings:
     comfyui_workflow: Path | None = None
     comfyui_timeout: int = 180
 
+    # 混元生图轻量版 / OpenAI 兼容图像接口
+    img_api_key: str | None = None
+    img_base_url: str = "https://api.hunyuan.cloud.tencent.com/v1"
+    img_api_model: str = "hunyuan-image-lite"
+    img_api_timeout: int = 120
+    img_api_retries: int = 2
+
     # diffusers（本地 GPU / CPU）
     img_model: str = "stabilityai/stable-diffusion-xl-base-1.0"
     model_cache_dir: Path = Path("models")
@@ -174,6 +185,23 @@ class Settings:
             img_consistency_mode=(
                 os.getenv("IMG_CONSISTENCY_MODE") or "self_attn"
             ).strip().lower(),
+            img_api_key=(
+                os.getenv("IMG_API_KEY")
+                or os.getenv("HUNYUAN_API_KEY")
+                or None
+            ),
+            img_base_url=(
+                os.getenv("IMG_BASE_URL")
+                or os.getenv("HUNYUAN_BASE_URL")
+                or "https://api.hunyuan.cloud.tencent.com/v1"
+            ),
+            img_api_model=(
+                os.getenv("IMG_API_MODEL")
+                or os.getenv("HUNYUAN_IMAGE_MODEL")
+                or "hunyuan-image-lite"
+            ),
+            img_api_timeout=max(10, _env_int("IMG_API_TIMEOUT", 120)),
+            img_api_retries=max(0, _env_int("IMG_API_RETRIES", 2)),
             img_metrics=_env_bool("IMG_METRICS", default=False),
             comfyui_url=os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
             comfyui_checkpoint=os.getenv(

@@ -12,11 +12,14 @@ DEFAULT_NEGATIVE_PROMPT = (
 )
 
 
-def build_negative_prompt(extra: str = "") -> str:
+def build_negative_prompt(extra: str = "", max_chars: int | None = None) -> str:
     parts = [DEFAULT_NEGATIVE_PROMPT]
     if extra.strip():
         parts.append(extra.strip())
-    return ", ".join(parts)
+    text = ", ".join(parts)
+    if max_chars is not None and len(text) > max_chars:
+        text = text[:max_chars].rstrip(" ,")
+    return text
 
 
 def select_involved_npcs(
@@ -34,12 +37,38 @@ def build_scene_prompt(
     world: WorldBible | None,
     npcs: list[NPCProfile],
     style: str = "",
+    max_chars: int | None = None,
 ) -> str:
     """把场景、动作、世界与角色外观拼装为单条提示词。
 
     中文叙事文本保留原样（部分本地模型可直接理解），同时附加英文风格标签
     与角色外观描述，提升 SDXL / ComfyUI 工作流的人物一致性。
+
+    ``max_chars`` 用于混元轻量版等有提示词长度上限的接口：优先保留
+    场景、人物与情节，再截断到指定字符数。
     """
+    involved = select_involved_npcs(scene, npcs)
+    character_parts = [
+        f"{npc.name} ({npc.appearance.strip() or npc.role.strip()})"
+        for npc in involved
+    ]
+
+    if max_chars is not None:
+        compact_parts = [
+            f"场景：{scene.setting.strip()}",
+            (
+                "人物：" + "；".join(character_parts)
+                if character_parts
+                else ""
+            ),
+            f"情节：{scene.summary.strip()}",
+            style.strip()[:80],
+            scene.visual_prompt.strip(),
+            "高清，细节丰富，电影感，画面干净，不含文字",
+        ]
+        prompt = "；".join(part for part in compact_parts if part)
+        return prompt[:max_chars].rstrip("；, ")
+
     parts: list[str] = []
     if style.strip():
         parts.append(style.strip())
@@ -51,13 +80,7 @@ def build_scene_prompt(
         parts.append("Action: " + "; ".join(scene.actions[:4]))
     if world is not None:
         parts.append(f"World: {world.era}, {world.tech_level}")
-
-    involved = select_involved_npcs(scene, npcs)
-    if involved:
-        character_parts = []
-        for npc in involved:
-            appearance = npc.appearance.strip() or npc.role.strip()
-            character_parts.append(f"{npc.name} ({appearance})")
+    if character_parts:
         parts.append("Characters: " + "; ".join(character_parts))
 
     parts.append(

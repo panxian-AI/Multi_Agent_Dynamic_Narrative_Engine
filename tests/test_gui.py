@@ -14,6 +14,7 @@ from madne.models import (
     Illustration,
     SceneOutline,
 )
+from madne.user_config import DEFAULT_IMG_BASE_URL, DEFAULT_IMG_MODEL
 
 
 def make_output() -> GameOutput:
@@ -61,12 +62,18 @@ def test_api_config_dialog_and_choice_buttons(tmp_path, monkeypatch):
         assert dialog._base_var.get() == "https://api.deepseek.com/v1"
         assert dialog._model_var.get() == "deepseek-chat"
         assert dialog._max_tokens_var.get() == 8192
+        assert dialog._img_base_var.get() == DEFAULT_IMG_BASE_URL
+        assert dialog._img_model_var.get() == DEFAULT_IMG_MODEL
+        assert dialog._img_width_var.get() == 1280
+        assert dialog._img_height_var.get() == 720
 
         dialog._key_var.set("sk-test-admin")
         dialog._admin_code_var.set("admin")
         unlocked = dialog._read_config(check_admin=True)
         assert unlocked is not None
         assert unlocked.admin_unlocked is True
+        assert unlocked.img_enabled is True
+        assert unlocked.img_base_url == DEFAULT_IMG_BASE_URL
 
         dialog._admin_code_var.set("wrong")
         assert dialog._read_config(check_admin=True) is None
