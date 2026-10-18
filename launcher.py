@@ -23,7 +23,8 @@ from madne.config import Settings
 from madne.engine.orchestrator import Orchestrator
 from madne.engine.run_log import RunLogEntry
 from madne.exceptions import ConfigError
-from madne.image import create_image_client
+from madne.image import ImageRequest, create_image_client
+from madne.image.hunyuan import OpenAICompatImageGenerator
 from madne.llm import MockLLMClient, OpenAICompatClient, create_llm_client
 from madne.models import Branch, GameOutput, PlayerInput
 from madne.user_config import (
@@ -36,6 +37,7 @@ from madne.user_config import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     clear_api_config,
+    config_dir,
     config_path,
     load_api_config,
     load_app_settings,
@@ -121,15 +123,24 @@ class ApiConfigDialog(tk.Toplevel):
         self._img_key_var = tk.StringVar(value=self._config.img_api_key)
         self._img_base_var = tk.StringVar(value=self._config.img_base_url)
         self._img_model_var = tk.StringVar(value=self._config.img_model)
+        self._img_size_var = tk.StringVar(value=self._config.img_size)
         self._img_width_var = tk.IntVar(value=self._config.img_width)
         self._img_height_var = tk.IntVar(value=self._config.img_height)
         self._show_img_key_var = tk.BooleanVar(value=False)
+        self._img_hint_var = tk.StringVar(value="")
+        self._img_base_var.trace_add(
+            "write", lambda *_: self._update_img_hint()
+        )
+        self._img_model_var.trace_add(
+            "write", lambda *_: self._update_img_hint()
+        )
 
         self._status_var = tk.StringVar(
             value="填写 API Key 后点击“测试连接”或“保存”；管理员可填写邀请码。"
         )
 
         self._build_ui()
+        self._update_img_hint()
         self.after(100, self._poll_queue)
         self.after(50, self._center)
         self.after(80, self._bring_to_front)
@@ -215,7 +226,7 @@ class ApiConfigDialog(tk.Toplevel):
 
         img_box = ttk.LabelFrame(
             frame,
-            text="生图 API（混元轻量版 / OpenAI 兼容，可选）",
+            text="生图 API（Seedream / OpenAI 兼容，可选）",
             padding=10,
         )
         img_box.pack(fill="x", pady=(12, 0))
@@ -293,15 +304,31 @@ class ApiConfigDialog(tk.Toplevel):
         )
         self._img_height_spin.pack(side="left")
 
+        ttk.Label(img_box, text="尺寸档位（可选）").grid(
+            row=5, column=0, sticky="w", pady=(8, 0)
+        )
+        self._img_size_entry = ttk.Entry(
+            img_box, textvariable=self._img_size_var
+        )
+        self._img_size_entry.grid(
+            row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+
         ttk.Label(
             img_box,
-            text=(
-                "混元轻量版建议 1280×720 或 1920×1080；"
-                "未填生图 Key 时使用 Mock 占位图。"
-            ),
+            textvariable=self._img_hint_var,
             style="Hint.TLabel",
             wraplength=620,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        self._test_img_btn = ttk.Button(
+            img_box,
+            text="测试生图（消耗一次调用）",
+            command=self._test_image_connection,
+        )
+        self._test_img_btn.grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(14, 0))
@@ -349,6 +376,124 @@ class ApiConfigDialog(tk.Toplevel):
         self._img_key_entry.configure(
             show="" if self._show_img_key_var.get() else "•"
         )
+
+    def _preview_endpoint(self) -> str:
+        try:
+            generator = OpenAICompatImageGenerator(
+                api_key="preview",
+                base_url=(
+                    self._img_base_var.get().strip() or DEFAULT_IMG_BASE_URL
+                ),
+                model=(
+                    self._img_model_var.get().strip() or DEFAULT_IMG_MODEL
+                ),
+            )
+            return generator.endpoint()
+        except Exception:
+            return self._img_base_var.get().strip()
+
+    def _update_img_hint(self) -> None:
+        endpoint = self._preview_endpoint()
+        endpoint_text = endpoint or "（请先填写 Base URL）"
+        self._img_hint_var.set(
+            f"实际请求：{endpoint_text}\n"
+            "Base URL 必须是服务商提供的 OpenAI 兼容地址；"
+            "混元默认地址不提供 Seedream 图像接口（会返回 404）。\n"
+            "Seedream 尺寸可填 2K / 4K；留空则使用上面的宽×高。"
+            "未填生图 Key 时使用 Mock 占位图。"
+        )
+
+    def _test_image_connection(self) -> None:
+        config = self._read_config()
+        if config is None:
+            return
+        if not config.img_api_key.strip():
+            messagebox.showwarning(
+                "缺少生图 Key", "请先填写生图 API Key。", parent=self
+            )
+            return
+        if not config.img_base_url.strip():
+            messagebox.showwarning(
+                "缺少 Base URL",
+                "请填写服务商控制台提供的 OpenAI 兼容 Base URL，"
+                "例如火山方舟的 https://ark.cn-beijing.volces.com/api/v3。",
+                parent=self,
+            )
+            return
+
+        endpoint = self._preview_endpoint()
+        if (
+            "seedream" in config.img_model.lower()
+            and "hunyuan.cloud.tencent.com" in endpoint.lower()
+        ):
+            messagebox.showwarning(
+                "Base URL 可能不正确",
+                f"当前会请求：\n{endpoint}\n\n"
+                "混元默认地址不提供 Seedream 图像接口，通常会返回 404。\n"
+                "请填写腾讯云/服务商控制台提供的 OpenAI 兼容 Base URL。",
+                parent=self,
+            )
+
+        if not messagebox.askyesno(
+            "测试生图",
+            f"将请求：\n{endpoint}\n\n这会消耗一次生图调用，确定继续吗？",
+            parent=self,
+        ):
+            return
+
+        self._set_busy(True)
+        self._status_var.set("正在测试生图…")
+
+        def worker() -> None:
+            try:
+                settings = replace(
+                    Settings.from_env(),
+                    img_enabled=True,
+                    img_backend="seedream",
+                    img_api_key=config.img_api_key,
+                    img_base_url=config.img_base_url,
+                    img_api_model=config.img_model,
+                    img_api_size=config.img_size,
+                    img_width=config.img_width,
+                    img_height=config.img_height,
+                )
+                client = create_image_client(settings)
+                target = config_dir() / "test_image.png"
+                result = client.generate(
+                    ImageRequest(
+                        prompt=(
+                            "一只橘猫坐在木质窗台上，窗外雨后竹林，"
+                            "柔和的午后侧光，写实摄影，高清细节，不含文字"
+                        ),
+                        output_path=target,
+                        width=config.img_width,
+                        height=config.img_height,
+                        seed=1,
+                    )
+                )
+                if result.backend == "mock":
+                    reason = "；".join(result.warnings) or "已回退 Mock"
+                    self._queue.put(
+                        ("error", f"生图测试失败：{reason}")
+                    )
+                else:
+                    self._queue.put(
+                        (
+                            "ok",
+                            f"生图成功：{result.backend} "
+                            f"{result.width}x{result.height}\n"
+                            f"测试图：{target}",
+                        )
+                    )
+            except Exception as exc:
+                self._queue.put(
+                    (
+                        "error",
+                        f"生图测试失败：{type(exc).__name__}: {exc}",
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _toggle_key_visibility(self) -> None:
         self._key_entry.configure(
@@ -403,6 +548,7 @@ class ApiConfigDialog(tk.Toplevel):
             img_model=(
                 self._img_model_var.get().strip() or DEFAULT_IMG_MODEL
             ),
+            img_size=self._img_size_var.get().strip(),
             img_width=img_width,
             img_height=img_height,
         )
@@ -418,9 +564,12 @@ class ApiConfigDialog(tk.Toplevel):
             self._img_key_entry,
             self._img_base_entry,
             self._img_model_entry,
+            self._img_size_entry,
             self._img_width_spin,
             self._img_height_spin,
+            self._img_size_entry,
             self._test_btn,
+            self._test_img_btn,
             self._save_btn,
         ):
             widget.configure(state=state)
@@ -501,6 +650,7 @@ class ApiConfigDialog(tk.Toplevel):
         self._img_enabled_var.set(self._config.img_enabled)
         self._img_key_var.set("")
         self._img_base_var.set(self._config.img_base_url)
+        self._img_size_var.set(self._config.img_size)
         self._img_model_var.set(self._config.img_model)
         self._img_width_var.set(self._config.img_width)
         self._img_height_var.set(self._config.img_height)
@@ -1006,7 +1156,7 @@ class MadneApp(tk.Tk):
             self._player_image = None
             return
         try:
-            photo = tk.PhotoImage(file=str(path))
+            photo = tk.PhotoImage(master=self, file=str(path))
         except tk.TclError as exc:
             self._player_image_label.grid_remove()
             self._player_image = None
@@ -1029,6 +1179,18 @@ class MadneApp(tk.Tk):
         self._player_image_label.grid(
             row=2, column=0, sticky="ew", pady=(0, 10)
         )
+
+        failure = next(
+            (
+                warning
+                for warning in illustration.warnings
+                if "失败" in warning or "降级" in warning
+            ),
+            None,
+        )
+        if illustration.backend == "mock" and failure:
+            reason = failure.replace("已自动降级 mock：", "")[:110]
+            self._player_status_var.set(f"AI 生图失败，已显示占位图：{reason}")
 
     def _render_player_output(self, output: GameOutput) -> None:
         self._player_setup_visible = False
@@ -1224,7 +1386,7 @@ class MadneApp(tk.Tk):
     def _refresh_api_status(self) -> None:
         config = load_api_config()
         img_status = (
-            "混元生图已配置"
+            "Seedream 生图已配置"
             if config.img_configured
             else ("生图：Mock 占位图" if config.img_enabled else "生图：已关闭")
         )
@@ -1283,6 +1445,7 @@ class MadneApp(tk.Tk):
                 img_backend=updated.img_backend,
                 img_api_key=updated.img_api_key,
                 img_base_url=updated.img_base_url,
+                img_api_size=updated.img_api_size,
                 img_api_model=updated.img_api_model,
                 img_width=updated.img_width,
                 img_height=updated.img_height,
@@ -1627,6 +1790,9 @@ def run_selftest() -> int:
             data_dir=BASE_DIR / "runtime_selftest",
             memory_compress_every=2,
             review_max_rewrites=1,
+            # 自检禁止调用付费生图 API，只验证 Mock 全流程
+            img_backend="mock",
+            img_api_key=None,
         )
         orchestrator = Orchestrator(
             llm=MockLLMClient(),

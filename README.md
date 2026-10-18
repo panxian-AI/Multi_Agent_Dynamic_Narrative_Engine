@@ -86,7 +86,7 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 | 值 | 依赖 | 说明 |
 |---|---|---|
 | `mock`（默认） | 无 | 纯标准库生成占位 PNG，CI / 无 GPU 可用 |
-| `hunyuan` | 混元生图轻量版 / OpenAI 兼容图像 API | 在「API 配置」窗口的“生图 API”区域填写 Key、Base URL、模型与分辨率 |
+| `seedream` | Seedream / OpenAI 兼容图像 API | 在「API 配置」窗口的“生图 API”区域填写 Key、Base URL、模型与尺寸；`hunyuan` 保留为兼容别名 |
 | `comfyui` | 部署方的 ComfyUI 实例 | 通过 `COMFYUI_URL` 提交工作流；自定义 InstantID 工作流可使用 `{{REFERENCE_IMAGE}}` 占位符 |
 | `diffusers` | 本地 GPU + torch/diffusers | SDXL；`id_injection` 可用 `IMG_IP_ADAPTER_DIR` 注入角色定妆照 |
 
@@ -94,32 +94,57 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 场景、动作和 `involved_npcs` 的外观生成一张插图；插图会出现在玩家界面
 故事正文上方，并写入 `GameOutput.illustration`。
 
-### 混元生图轻量版
+### Seedream / OpenAI 兼容图像接口
 
 桌面版的推荐配置方式：
 
 1. 打开「API 配置」窗口；
-2. 在“生图 API（混元轻量版 / OpenAI 兼容）”区域填写生图 API Key；
-3. 默认 Base URL 为 `https://api.hunyuan.cloud.tencent.com/v1`，模型为
-   `hunyuan-image-lite`；如果你使用的是第三方 OpenAI 兼容中转，请填写
-   服务商实际的 Base URL 和模型名；
-4. 分辨率建议 `1280×720` 或 `1920×1080`；
-5. 保存后，后续每个回合都会尝试调用生图 API；失败会自动回退 Mock 占位图，
-   不会中断文本生成。
+2. 在“生图 API（Seedream / OpenAI 兼容）”区域填写生图 API Key；
+3. **Base URL 必须填服务商控制台提供的 OpenAI 兼容地址**，不能填混元默认
+   地址（`https://api.hunyuan.cloud.tencent.com/v1` 不提供 Seedream 图像接口，
+   会返回 404）。例如火山方舟为
+   `https://ark.cn-beijing.volces.com/api/v3`；腾讯云或其他网关请填控制台
+   里的实际地址。模型名填 API 文档中的模型 ID，不一定是控制台显示名；
+4. 分辨率可填 `1280×720` 或 `1920×1080`；如果 Seedream 要求尺寸档位，
+   可在“尺寸档位（可选）”填 `2K` / `4K`，留空则使用宽×高；
+5. 保存前点击“测试生图”，窗口会显示实际请求地址和错误；成功后再保存。
+   后续每个回合都会尝试调用生图 API；失败会自动回退 Mock 占位图，
+   并在玩家界面提示“AI 生图失败”，不会中断文本生成。
+
+### 生图失败排查
+
+- **HTTP 401**：Key 不属于当前 Base URL，或 Key 已失效；请回到服务商控制台
+  确认 Key 与接口地址是否配套。
+- **HTTP 404**：Base URL 或接口路径错误。最常见的原因是 Seedream 模型仍在使用
+  混元默认地址；请替换为服务商提供的 OpenAI 兼容地址。
+- 在“API 配置”窗口点击“测试生图”，会显示 **实际请求 URL** 与错误详情；
+  测试图保存到 `config\test_image.png`（源码版为 `%APPDATA%\MADNE\test_image.png`）。
+- 玩家界面出现“AI 生图失败，已显示占位图”时，说明真实 API 调用失败，
+  当前显示的是 Mock 占位图，不是模型生成的图片。
+- 腾讯云 CloudBase AI 的 Base URL 通常形如
+  `https://<环境ID>.api.tcloudbasegateway.com/v1`（环境 ID 在 CloudBase
+  控制台）；火山方舟 Seedream 的 Base URL 为
+  `https://ark.cn-beijing.volces.com/api/v3`，模型填控制台的模型 ID 或
+  推理接入点 ID。
+- 如果服务商使用腾讯云 `SecretId/SecretKey` 签名接口或自有 JSON 协议，
+  当前 OpenAI 兼容客户端不适用；把官方 curl 示例发给开发方即可继续适配。
 
 源码 / CLI 也可以用环境变量：
 
 ```dotenv
-IMG_BACKEND=hunyuan
+IMG_BACKEND=seedream
 IMG_API_KEY=sk-your-image-key
-IMG_BASE_URL=https://api.hunyuan.cloud.tencent.com/v1
-IMG_API_MODEL=hunyuan-image-lite
+# 必填：服务商提供的 OpenAI 兼容地址
+IMG_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+IMG_API_MODEL=Seedream-Image-v5.0-lite
 IMG_WIDTH=1280
 IMG_HEIGHT=720
+# 可选：Seedream 尺寸档位（2K / 4K），留空则用宽×高
+IMG_API_SIZE=
 ```
 
-> 混元轻量版的 Prompt / NegativePrompt 上限为 256 字符，代码会自动使用
-> 精简提示词并截断。若你的服务商使用腾讯云签名接口（SecretId/SecretKey），
+> Seedream / 混元等接口的 Prompt 长度上限较严格，代码会自动使用精简提示词
+> 并截断到 256 字符。若你的服务商使用腾讯云签名接口（SecretId/SecretKey），
 > 需要通过 OpenAI 兼容网关转换后再接入。
 
 仓库内置了一份可直接编辑的 API 格式工作流模板
@@ -174,8 +199,8 @@ python -m madne run --mock -i "..." --no-illustrate
   玩家开始页也有「API 设置」按钮，故事中可按 `F11`（或 `Ctrl+Shift+K`）打开。
   - 输入自己的 LLM API Key（默认掩码显示，可切换显示）；
   - 可修改 Base URL、模型名与最大 Token；
-  - “生图 API”区域可填写混元生图轻量版 / OpenAI 兼容图像接口的 Key、
-    Base URL、模型和分辨率；
+  - “生图 API”区域可填写 Seedream / OpenAI 兼容图像接口的 Key、
+    Base URL、模型、分辨率和可选尺寸档位；
   - 窗口下方有**可选的管理员邀请码**：普通玩家留空；
     输入 `admin` 并保存后解锁管理员界面；
   - “测试连接”会用当前输入发一次极小 LLM 请求，成功后再保存；
@@ -274,7 +299,7 @@ madne/
 ├── memory/system.py          # M10 完整记忆 + 压缩记忆合并
 ├── image/                    # 图像生成子系统
 │   ├── base.py               # ImageGenClient / 请求结果契约
-│   ├── hunyuan.py            # 混元生图轻量版 / OpenAI 兼容图像 API
+│   ├── hunyuan.py            # Seedream / OpenAI 兼容图像 API
 │   ├── mock.py               # 零依赖占位 PNG
 │   ├── comfyui.py            # ComfyUI HTTP 后端
 │   ├── diffusers.py          # 本地 SDXL + IP-Adapter

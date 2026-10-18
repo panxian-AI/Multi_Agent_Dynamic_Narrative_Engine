@@ -18,8 +18,8 @@ DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_MAX_TOKENS = 8192
 
-DEFAULT_IMG_BASE_URL = "https://api.hunyuan.cloud.tencent.com/v1"
-DEFAULT_IMG_MODEL = "hunyuan-image-lite"
+DEFAULT_IMG_BASE_URL = ""
+DEFAULT_IMG_MODEL = "Seedream-Image-v5.0-lite"
 DEFAULT_IMG_WIDTH = 1280
 DEFAULT_IMG_HEIGHT = 720
 
@@ -37,6 +37,7 @@ class ApiConfig:
     img_api_key: str = ""
     img_base_url: str = DEFAULT_IMG_BASE_URL
     img_model: str = DEFAULT_IMG_MODEL
+    img_size: str = ""
     img_width: int = DEFAULT_IMG_WIDTH
     img_height: int = DEFAULT_IMG_HEIGHT
 
@@ -114,6 +115,7 @@ def load_api_config() -> ApiConfig:
         img_base_url=str(
             payload.get("img_base_url") or DEFAULT_IMG_BASE_URL
         ).strip(),
+        img_size=str(payload.get("img_size") or "").strip(),
         img_model=str(payload.get("img_model") or DEFAULT_IMG_MODEL).strip(),
         img_width=img_width,
         img_height=img_height,
@@ -157,10 +159,11 @@ def apply_api_config(
     if config.img_enabled and config.img_api_key.strip():
         updates.update(
             img_enabled=True,
-            img_backend="hunyuan",
+            img_backend="seedream",
             img_api_key=config.img_api_key.strip(),
-            img_base_url=config.img_base_url.strip() or DEFAULT_IMG_BASE_URL,
+            img_base_url=config.img_base_url.strip(),
             img_api_model=config.img_model.strip() or DEFAULT_IMG_MODEL,
+            img_api_size=config.img_size.strip(),
             img_width=max(256, config.img_width or DEFAULT_IMG_WIDTH),
             img_height=max(256, config.img_height or DEFAULT_IMG_HEIGHT),
         )

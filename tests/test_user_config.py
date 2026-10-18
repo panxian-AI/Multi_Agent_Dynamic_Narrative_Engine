@@ -69,7 +69,8 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
         api_key="sk-llm-test",
         img_api_key="sk-image-test",
         img_base_url="https://image.example/v1",
-        img_model="hunyuan-image-lite",
+        img_model="Seedream-Image-v5.0-lite",
+        img_size="2K",
         img_width=1280,
         img_height=720,
     )
@@ -79,6 +80,7 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
     assert loaded.img_api_key == "sk-image-test"
     assert loaded.img_base_url == "https://image.example/v1"
     assert loaded.img_model == DEFAULT_IMG_MODEL
+    assert loaded.img_size == "2K"
     assert (loaded.img_width, loaded.img_height) == (1280, 720)
 
     applied = apply_api_config(
@@ -88,10 +90,11 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
     assert applied.llm_api_key == "sk-llm-test"
     assert applied.use_mock is False
     assert applied.img_enabled is True
-    assert applied.img_backend == "hunyuan"
+    assert applied.img_backend == "seedream"
     assert applied.img_api_key == "sk-image-test"
     assert applied.img_base_url == "https://image.example/v1"
-    assert applied.img_api_model == "hunyuan-image-lite"
+    assert applied.img_api_model == "Seedream-Image-v5.0-lite"
+    assert applied.img_api_size == "2K"
     assert (applied.img_width, applied.img_height) == (1280, 720)
 
 
@@ -137,7 +140,8 @@ def test_frozen_app_settings_reads_portable_config(tmp_path, monkeypatch):
             api_key="sk-llm-portable",
             img_api_key="sk-image-portable",
             img_base_url="https://image.example/v1",
-            img_model="hunyuan-image-lite",
+            img_model="Seedream-Image-v5.0-lite",
+            img_size="4K",
             img_width=1920,
             img_height=1080,
         )
@@ -147,7 +151,9 @@ def test_frozen_app_settings_reads_portable_config(tmp_path, monkeypatch):
 
     assert settings.llm_api_key == "sk-llm-portable"
     assert settings.use_mock is False
-    assert settings.img_backend == "hunyuan"
+    assert settings.img_backend == "seedream"
     assert settings.img_api_key == "sk-image-portable"
     assert settings.img_base_url == "https://image.example/v1"
+    assert settings.img_api_model == "Seedream-Image-v5.0-lite"
+    assert settings.img_api_size == "4K"
     assert (settings.img_width, settings.img_height) == (1920, 1080)

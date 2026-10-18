@@ -278,7 +278,8 @@ def image(
     prompt = build_scene_prompt(scene, world, npcs, settings.img_style)
     prompt_limit = (
         256
-        if settings.img_backend in {"hunyuan", "openai", "openai_compat"}
+        if settings.img_backend
+        in {"seedream", "hunyuan", "openai", "openai_compat"}
         else None
     )
     prompt = build_scene_prompt(

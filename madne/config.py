@@ -140,10 +140,13 @@ class Settings:
     comfyui_workflow: Path | None = None
     comfyui_timeout: int = 180
 
-    # 混元生图轻量版 / OpenAI 兼容图像接口
+    # Seedream / OpenAI 兼容图像接口
+    # Base URL 必须由部署方填写服务商提供的 OpenAI 兼容地址，
+    # 不能默认成混元地址（Seedream 模型会返回 404）。
     img_api_key: str | None = None
-    img_base_url: str = "https://api.hunyuan.cloud.tencent.com/v1"
-    img_api_model: str = "hunyuan-image-lite"
+    img_base_url: str = ""
+    img_api_model: str = "Seedream-Image-v5.0-lite"
+    img_api_size: str = ""
     img_api_timeout: int = 120
     img_api_retries: int = 2
 
@@ -193,13 +196,15 @@ class Settings:
             img_base_url=(
                 os.getenv("IMG_BASE_URL")
                 or os.getenv("HUNYUAN_BASE_URL")
-                or "https://api.hunyuan.cloud.tencent.com/v1"
+                or ""
             ),
             img_api_model=(
                 os.getenv("IMG_API_MODEL")
+                or os.getenv("SEEDREAM_IMAGE_MODEL")
                 or os.getenv("HUNYUAN_IMAGE_MODEL")
-                or "hunyuan-image-lite"
+                or "Seedream-Image-v5.0-lite"
             ),
+            img_api_size=os.getenv("IMG_API_SIZE", ""),
             img_api_timeout=max(10, _env_int("IMG_API_TIMEOUT", 120)),
             img_api_retries=max(0, _env_int("IMG_API_RETRIES", 2)),
             img_metrics=_env_bool("IMG_METRICS", default=False),

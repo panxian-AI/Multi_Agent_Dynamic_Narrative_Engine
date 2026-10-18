@@ -64,6 +64,7 @@ def test_api_config_dialog_and_choice_buttons(tmp_path, monkeypatch):
         assert dialog._max_tokens_var.get() == 8192
         assert dialog._img_base_var.get() == DEFAULT_IMG_BASE_URL
         assert dialog._img_model_var.get() == DEFAULT_IMG_MODEL
+        assert dialog._img_size_var.get() == ""
         assert dialog._img_width_var.get() == 1280
         assert dialog._img_height_var.get() == 720
 
@@ -74,6 +75,7 @@ def test_api_config_dialog_and_choice_buttons(tmp_path, monkeypatch):
         assert unlocked.admin_unlocked is True
         assert unlocked.img_enabled is True
         assert unlocked.img_base_url == DEFAULT_IMG_BASE_URL
+        assert unlocked.img_size == ""
 
         dialog._admin_code_var.set("wrong")
         assert dialog._read_config(check_admin=True) is None

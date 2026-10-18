@@ -617,11 +617,11 @@ class Orchestrator:
         profiles = [npc for npc in raw_npcs if isinstance(npc, NPCProfile)]
         involved = select_involved_npcs(scene, profiles)
 
-        # 混元轻量版 Prompt/NegativePrompt 最长 256 字符
+        # Seedream / 混元等图像 API 的提示词长度上限
         prompt_limit = (
             256
             if self.settings.img_backend
-            in {"hunyuan", "openai", "openai_compat"}
+            in {"seedream", "hunyuan", "openai", "openai_compat"}
             else None
         )
         prompt = build_scene_prompt(

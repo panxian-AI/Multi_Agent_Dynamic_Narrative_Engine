@@ -75,7 +75,24 @@ def test_scene_prompt_contains_character_appearance():
 
 
 
-def test_hunyuan_factory_uses_api_config():
+def test_seedream_factory_uses_api_config():
+    client = create_image_client(
+        Settings(
+            use_mock=True,
+            img_backend="seedream",
+            img_api_key="sk-image-test",
+            img_base_url="https://image.example/v1",
+            img_api_model="Seedream-Image-v5.0-lite",
+            img_api_size="2K",
+        )
+    )
+
+    health = client.health()
+    assert health["backend"] == "seedream"
+    assert health["available"] is True
+
+
+def test_hunyuan_alias_still_supported():
     client = create_image_client(
         Settings(
             use_mock=True,
@@ -86,9 +103,7 @@ def test_hunyuan_factory_uses_api_config():
         )
     )
 
-    health = client.health()
-    assert health["backend"] == "hunyuan"
-    assert health["available"] is True
+    assert client.health()["backend"] == "hunyuan"
 def test_unknown_backend_falls_back_to_mock():
     client = create_image_client(
         Settings(use_mock=True, img_backend="not-a-backend")
@@ -306,6 +321,7 @@ def test_hunyuan_client_downloads_generated_image(tmp_path: Path):
             base_url=f"http://127.0.0.1:{server.server_address[1]}/v1",
             model="hunyuan-image-lite",
             timeout=10,
+            backend_name="hunyuan",
         )
         target = tmp_path / "hunyuan.png"
         result = client.generate(
