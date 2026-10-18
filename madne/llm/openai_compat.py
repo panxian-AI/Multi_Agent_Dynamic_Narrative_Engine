@@ -17,6 +17,7 @@ class OpenAICompatClient:
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         model: str = "gpt-4o-mini",
+        max_tokens: int = 8192,
         timeout: float = 120.0,
     ) -> None:
         if not api_key:
@@ -24,6 +25,7 @@ class OpenAICompatClient:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.max_tokens = max_tokens
         self.timeout = timeout
 
     @property
@@ -47,6 +49,7 @@ class OpenAICompatClient:
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
+            "max_tokens": self.max_tokens,
         }
         if json_schema is not None:
             # 兼容多数 OpenAI 兼容端点的 JSON 模式；schema 约束已写入 prompt。

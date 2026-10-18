@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -9,9 +10,25 @@ from pathlib import Path
 import typer
 
 from .config import Settings
+from .engine.context_store import ContextStore
 from .engine.orchestrator import Orchestrator
+from .engine.run_log import RunLogEntry
+from .image import (
+    ImageRequest,
+    build_negative_prompt,
+    build_scene_prompt,
+    create_image_client,
+)
+from .image.prompts import select_involved_npcs
 from .llm import create_llm_client
-from .models import Branch, GameOutput, PlayerInput
+from .models import (
+    Branch,
+    GameOutput,
+    Illustration,
+    ImageCharacter,
+    NPCProfile,
+    PlayerInput,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -19,12 +36,50 @@ app = typer.Typer(
 )
 
 
-def _build_settings(data_dir: str, compress_every: int | None = None) -> Settings:
+def _build_settings(
+    data_dir: str,
+    compress_every: int | None = None,
+    prefetch: bool | None = None,
+    illustrate: bool | None = None,
+    img_backend: str | None = None,
+) -> Settings:
     settings = Settings.from_env()
     overrides = {"data_dir": Path(data_dir)}
     if compress_every is not None:
         overrides["memory_compress_every"] = max(1, compress_every)
+    if prefetch is not None:
+        overrides["prefetch_choices"] = prefetch
+    if illustrate is not None:
+        overrides["img_enabled"] = illustrate
+    if img_backend:
+        overrides["img_backend"] = img_backend
     return replace(settings, **overrides)
+
+
+def _display_path(path: Path, data_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(data_dir.resolve()).as_posix()
+    except (ValueError, OSError):
+        return path.as_posix()
+
+
+def _echo_choice_cache(orchestrator: Orchestrator, session: str, output: GameOutput) -> None:
+    if not orchestrator.settings.prefetch_choices:
+        return
+    cache = orchestrator.choice_cache_for(session)
+    if cache is None:
+        return
+    previews = []
+    for branch in output.choices:
+        nexts = cache.next_choices(branch.branch_id)
+        if nexts:
+            previews.append(
+                f"{branch.branch_id}→" + "/".join(
+                    choice.path[-1] for choice in nexts[:3]
+                )
+            )
+    if previews:
+        typer.echo("预取下一层：" + " | ".join(previews))
 
 
 def _pick_demo_choice(output: GameOutput) -> Branch:
@@ -35,10 +90,25 @@ def _pick_demo_choice(output: GameOutput) -> Branch:
     return output.choices[min(1, len(output.choices) - 1)]
 
 
+def _print_progress(entry: RunLogEntry) -> None:
+    typer.echo(
+        f"  [cycle {entry.cycle}] {entry.step_id} {entry.status} "
+        f"(attempt {entry.attempt}, {entry.duration_ms / 1000:.1f}s)"
+    )
+
+
 def _echo_output(turn: int, output: GameOutput, path: Path | None) -> None:
     typer.echo(f"[回合 {turn}] 场景：{output.scene.summary}")
     if path is not None:
         typer.echo(f"输出文件：{path}")
+    if output.illustration is not None:
+        illustration = output.illustration
+        typer.echo(
+            f"插图：{illustration.relative_path} "
+            f"（{illustration.backend} · {illustration.width}x{illustration.height}）"
+        )
+        for warning in illustration.warnings:
+            typer.echo(f"  提示：{warning}")
     choices = " | ".join(
         f"{branch.branch_id}. {branch.description}" for branch in output.choices
     )
@@ -67,31 +137,57 @@ def run(
         min=1,
         help="每 N 个记忆事件触发压缩",
     ),
+    prefetch: bool | None = typer.Option(
+        None,
+        "--prefetch/--no-prefetch",
+        help="是否预取未来两层选项；不指定时遵循 .env",
+    ),
+    illustrate: bool | None = typer.Option(
+        None,
+        "--illustrate/--no-illustrate",
+        help="是否生成场景插图；不指定时遵循 IMG_ENABLED",
+    ),
+    img_backend: str | None = typer.Option(
+        None,
+        "--img-backend",
+        help="临时覆盖图像后端：mock / comfyui / diffusers",
+    ),
     print_json: bool = typer.Option(False, "--print-json", help="打印完整 GameOutput JSON"),
 ) -> None:
     """运行一次或连续多回合的叙事生成 Demo。"""
-    settings = _build_settings(data_dir, compress_every)
+    settings = _build_settings(
+        data_dir,
+        compress_every,
+        prefetch,
+        illustrate=illustrate,
+        img_backend=img_backend,
+    )
     orchestrator = Orchestrator(
         llm=create_llm_client(settings, mock=mock),
         settings=settings,
+        on_event=_print_progress,
     )
 
     current_input = input
     player_choice: str | None = None
+    player_branch_id: str | None = None
 
     for turn in range(1, turns + 1):
         output = orchestrator.run_cycle(
             PlayerInput(text=current_input, session_id=session),
             player_choice=player_choice,
+            player_branch_id=player_branch_id,
         )
         path = orchestrator.output_path_for(session)
         _echo_output(turn, output, path)
+        _echo_choice_cache(orchestrator, session, output)
         if print_json:
             typer.echo(
                 json.dumps(output.to_engine_dict(), ensure_ascii=False, indent=2)
             )
         if turn < turns:
             branch = _pick_demo_choice(output)
+            player_branch_id = branch.branch_id
             player_choice = f"{branch.branch_id}. {branch.description}"
             current_input = f"我选择：{player_choice}。请继续推进剧情。"
 
@@ -110,16 +206,202 @@ def resume(
         help="不指定时遵循 .env / 环境变量中的 MADNE_MOCK",
     ),
     data_dir: str = typer.Option("runtime", "--data-dir", help="运行数据目录"),
+    prefetch: bool | None = typer.Option(
+        None,
+        "--prefetch/--no-prefetch",
+        help="是否预取未来两层选项；不指定时遵循 .env",
+    ),
+    illustrate: bool | None = typer.Option(
+        None,
+        "--illustrate/--no-illustrate",
+        help="是否生成场景插图；不指定时遵循 IMG_ENABLED",
+    ),
+    img_backend: str | None = typer.Option(
+        None,
+        "--img-backend",
+        help="临时覆盖图像后端：mock / comfyui / diffusers",
+    ),
 ) -> None:
     """从最近一次 ContextStore 断点继续执行。"""
-    settings = _build_settings(data_dir)
+    settings = _build_settings(
+        data_dir,
+        prefetch=prefetch,
+        illustrate=illustrate,
+        img_backend=img_backend,
+    )
     orchestrator = Orchestrator(
         llm=create_llm_client(settings, mock=mock),
+        on_event=_print_progress,
         settings=settings,
     )
     output = orchestrator.resume(session)
     typer.echo(f"已从会话 {session} 的断点恢复。")
     _echo_output(0, output, orchestrator.output_path_for(session))
+
+
+@app.command()
+def image(
+    session: str = typer.Option(..., "--session", help="需要重绘插图的会话 ID"),
+    data_dir: str = typer.Option("runtime", "--data-dir", help="运行数据目录"),
+    img_backend: str | None = typer.Option(
+        None,
+        "--img-backend",
+        help="临时覆盖图像后端：mock / comfyui / diffusers",
+    ),
+) -> None:
+    """为会话最近一回合重新生成插图（不调用叙事 LLM）。"""
+    settings = _build_settings(data_dir, img_backend=img_backend)
+    session_dir = settings.data_dir / "sessions" / session
+    candidates = sorted((session_dir / "cycles").glob("cycle_*/context.json"))
+    if not candidates:
+        typer.echo(f"会话 {session} 没有可用的 ContextStore")
+        raise typer.Exit(code=1)
+
+    ctx: ContextStore | None = None
+    for path in reversed(candidates):
+        candidate = ContextStore.load(path)
+        if candidate.has("scene") and candidate.has("world"):
+            ctx = candidate
+            break
+    if ctx is None:
+        typer.echo("上下文中缺少 scene/world，无法生成插图")
+        raise typer.Exit(code=1)
+
+    scene = ctx.require("scene")
+    world = ctx.require("world")
+    raw_npcs = ctx.get("npcs")
+    npcs = (
+        [item for item in raw_npcs if isinstance(item, NPCProfile)]
+        if isinstance(raw_npcs, list)
+        else []
+    )
+    prompt = build_scene_prompt(scene, world, npcs, settings.img_style)
+    seed = settings.img_seed
+    if seed is None:
+        seed = int(
+            hashlib.sha256(
+                f"{session}|madne-image".encode("utf-8")
+            ).hexdigest()[:8],
+            16,
+        )
+    involved = select_involved_npcs(scene, npcs)
+    references: list[Path] = []
+    for npc in involved:
+        raw = (npc.reference_image or "").strip()
+        if not raw:
+            continue
+        reference = Path(raw)
+        if not reference.is_absolute():
+            reference = settings.data_dir / reference
+        if reference.exists():
+            references.append(reference)
+
+    mode = settings.img_consistency_mode
+    if mode not in {"self_attn", "id_injection"}:
+        mode = "self_attn"
+    if mode == "id_injection" and not references:
+        mode = "self_attn"
+
+    target = session_dir / "assets" / f"cycle_{ctx.cycle:03d}.png"
+    client = create_image_client(settings)
+    result = client.generate(
+        ImageRequest(
+            prompt=prompt,
+            negative_prompt=build_negative_prompt(),
+            output_path=target,
+            width=settings.img_width,
+            height=settings.img_height,
+            seed=seed,
+            steps=settings.img_steps,
+            guidance_scale=settings.img_guidance,
+            reference_images=references,
+            consistency_mode=mode,
+        )
+    )
+    if settings.img_consistency_mode == "id_injection" and not references:
+        result.warnings.insert(
+            0,
+            "未找到角色定妆照，id_injection 已回退 self_attn",
+        )
+
+    relative_path = (
+        f"sessions/{session}/assets/cycle_{ctx.cycle:03d}.png"
+    )
+    illustration = Illustration(
+        scene_id=scene.scene_id,
+        backend=result.backend,
+        prompt=result.prompt,
+        negative_prompt=result.negative_prompt,
+        seed=result.seed,
+        width=result.width,
+        height=result.height,
+        consistency_mode=mode,
+        relative_path=relative_path,
+        url=f"/assets/{session}/cycle_{ctx.cycle:03d}.png",
+        characters=[
+            ImageCharacter(
+                npc_id=npc.npc_id,
+                name=npc.name,
+                appearance=npc.appearance,
+            )
+            for npc in involved
+        ],
+        reference_images=[
+            _display_path(path, settings.data_dir) for path in references
+        ],
+        warnings=list(result.warnings),
+    )
+    output_path = (
+        session_dir
+        / "cycles"
+        / f"cycle_{ctx.cycle:03d}"
+        / "output.json"
+    )
+    if output_path.exists():
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        payload["illustration"] = illustration.model_dump(mode="json")
+        output_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    typer.echo(
+        f"已生成插图：{target}（{result.backend} · "
+        f"{result.width}x{result.height}）"
+    )
+    for warning in result.warnings:
+        typer.echo(f"提示：{warning}")
+
+
+@app.command()
+def health(
+    data_dir: str = typer.Option("runtime", "--data-dir", help="运行数据目录"),
+    img_backend: str | None = typer.Option(
+        None,
+        "--img-backend",
+        help="临时覆盖图像后端：mock / comfyui / diffusers",
+    ),
+) -> None:
+    """检查 LLM / 图像后端 / 存储的配置状态。"""
+    settings = _build_settings(data_dir, img_backend=img_backend)
+    client = create_image_client(settings)
+    payload = {
+        "llm": {
+            "mock": settings.use_mock,
+            "configured": bool(settings.llm_api_key) and not settings.use_mock,
+            "base_url": settings.llm_base_url,
+            "model": settings.llm_model,
+        },
+        "image": {
+            "enabled": settings.img_enabled,
+            **client.health(),
+        },
+        "storage": {
+            "data_dir": str(settings.data_dir),
+            "exists": settings.data_dir.exists(),
+        },
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

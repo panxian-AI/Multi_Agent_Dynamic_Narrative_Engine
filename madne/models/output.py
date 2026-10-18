@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 
 from .base import MADNEModel
 from .framework import Branch
+from .image import Illustration
 from .scene import SceneOutline
 from .script import DialogueScript
 
@@ -16,6 +17,7 @@ class GameOutput(MADNEModel):
     choices: list[Branch] = Field(min_length=1, max_length=5)
     world_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     session_id: str = Field(min_length=1)
+    illustration: Illustration | None = None
 
     @model_validator(mode="after")
     def _scene_script_match(self) -> "GameOutput":

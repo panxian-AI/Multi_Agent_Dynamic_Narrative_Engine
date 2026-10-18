@@ -37,6 +37,10 @@ DEFAULT_ROSTER: tuple[NPCProfile, ...] = (
         role="私家侦探（玩家角色）",
         is_major=True,
         traits={"honesty": 75, "selfishness": 40, "loyalty": 60, "curiosity": 85},
+        appearance=(
+            "Chinese male private detective in his early 30s, short black hair, "
+            "tired eyes, worn charcoal trench coat, cybernetic left eye"
+        ),
     ),
     NPCProfile(
         npc_id="npc_suli",
@@ -44,6 +48,10 @@ DEFAULT_ROSTER: tuple[NPCProfile, ...] = (
         role="失踪的记忆商人",
         is_major=True,
         traits={"honesty": 35, "selfishness": 80, "loyalty": 30, "curiosity": 65},
+        appearance=(
+            "elegant Chinese woman in her 30s, silver bob haircut, "
+            "black high-collar memory-broker suit, neon-blue data earrings"
+        ),
     ),
     NPCProfile(
         npc_id="npc_kai",
@@ -51,6 +59,10 @@ DEFAULT_ROSTER: tuple[NPCProfile, ...] = (
         role="记忆黑市掮客 / 潜在盟友",
         is_major=True,
         traits={"honesty": 60, "selfishness": 45, "loyalty": 85, "curiosity": 50},
+        appearance=(
+            "streetwise Chinese man in his late 20s, undercut hair, "
+            "patched dark leather jacket, glowing memory-chip pendant"
+        ),
     ),
     NPCProfile(
         npc_id="npc_vera",
@@ -58,6 +70,10 @@ DEFAULT_ROSTER: tuple[NPCProfile, ...] = (
         role="企业合规官（背景角色）",
         is_major=False,
         traits={"honesty": 50, "selfishness": 65, "loyalty": 40, "curiosity": 55},
+        appearance=(
+            "corporate compliance officer, sharp gray tailored business suit, "
+            "slicked-back black hair, silver corporate ID pin"
+        ),
     ),
 )
 
@@ -100,6 +116,30 @@ class NPCSystem:
         if not self._profiles:
             self._profiles = {profile.npc_id: profile for profile in DEFAULT_ROSTER}
             self.save()
+        return self.all_profiles()
+
+    def set_profiles(self, profiles: list[NPCProfile]) -> list[NPCProfile]:
+        """用角色抽取 AI 的产出替换/初始化角色池并持久化。
+
+        LLM 在后续回合可能漏掉 appearance / reference_image；若新值为空，
+        继承旧档案，避免生图失去跨回合人物一致性。
+        """
+        if not profiles:
+            return self.all_profiles()
+        merged: list[NPCProfile] = []
+        for profile in profiles:
+            previous = self._profiles.get(profile.npc_id)
+            if previous is not None:
+                updates: dict[str, str] = {}
+                if not profile.appearance and previous.appearance:
+                    updates["appearance"] = previous.appearance
+                if not profile.reference_image and previous.reference_image:
+                    updates["reference_image"] = previous.reference_image
+                if updates:
+                    profile = profile.model_copy(update=updates)
+            merged.append(profile)
+        self._profiles = {profile.npc_id: profile for profile in merged}
+        self.save()
         return self.all_profiles()
 
     def all_profiles(self) -> list[NPCProfile]:

@@ -31,3 +31,7 @@ class IntentParseError(AgentError):
 
 class EngineError(MADNEError):
     """工作流引擎/上下文状态错误。"""
+
+
+class ImageGenError(MADNEError):
+    """图像生成后端不可用或生成失败。"""

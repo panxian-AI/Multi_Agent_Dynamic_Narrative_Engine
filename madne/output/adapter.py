@@ -11,6 +11,7 @@ from ..exceptions import EngineError
 from ..models import (
     DialogueScript,
     GameOutput,
+    Illustration,
     SceneOutline,
     StoryFramework,
     WorldBible,
@@ -28,6 +29,7 @@ class OutputAdapter:
         script: DialogueScript,
         framework: StoryFramework,
         world: WorldBible,
+        illustration: Illustration | None = None,
     ) -> GameOutput:
         choices = framework.branches[:5]
         if not choices:
@@ -42,6 +44,7 @@ class OutputAdapter:
             choices=choices,
             world_hash=world_hash,
             session_id=session_id,
+            illustration=illustration,
         )
         issues = self.validate_for_engine(output.to_engine_dict())
         if issues:
@@ -60,6 +63,21 @@ class OutputAdapter:
         scene = payload.get("scene")
         script = payload.get("script")
         choices = payload.get("choices")
+        illustration = payload.get("illustration")
+
+        if illustration is not None:
+            if not isinstance(illustration, dict):
+                issues.append("illustration 结构非法")
+            else:
+                for key in ("scene_id", "backend", "prompt", "relative_path", "url"):
+                    if not illustration.get(key):
+                        issues.append(f"illustration.{key} 缺失")
+                if (
+                    isinstance(scene, dict)
+                    and illustration.get("scene_id")
+                    and illustration.get("scene_id") != scene.get("scene_id")
+                ):
+                    issues.append("illustration.scene_id 与 scene.scene_id 不一致")
 
         if not isinstance(scene, dict) or not scene.get("scene_id"):
             issues.append("scene.scene_id 缺失")

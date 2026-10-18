@@ -12,3 +12,5 @@ class SceneOutline(MADNEModel):
     actions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
     involved_npcs: list[str] = Field(default_factory=list)
+    # 供文生图使用的英文镜头描述（不参与叙事语义，可为空）
+    visual_prompt: str = ""

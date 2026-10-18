@@ -7,10 +7,12 @@ from pydantic import BaseModel
 
 from .base import MADNEModel
 from .brief import CreationBrief
+from .cache import CachedChoice, ChoiceCache
 from .framework import Beat, Branch, StoryFramework
+from .image import Illustration, ImageCharacter, ImageMetrics
 from .input import PlayerInput
 from .memory import CompressedMemory, MemoryEvent
-from .npc import NPCProfile
+from .npc import CastRoster, NPCProfile
 from .output import GameOutput
 from .plan import PlannerDecision, TaskPlan, TaskStep
 from .review import Issue, ReviewReport
@@ -29,13 +31,19 @@ __all__ = [
     "Beat",
     "Branch",
     "StoryFramework",
+    "CachedChoice",
+    "ChoiceCache",
     "SceneOutline",
     "DialogueLine",
     "DialogueScript",
     "NPCProfile",
+    "CastRoster",
     "Issue",
     "ReviewReport",
     "GameOutput",
+    "Illustration",
+    "ImageCharacter",
+    "ImageMetrics",
     "MemoryEvent",
     "CompressedMemory",
     "MODEL_REGISTRY",
@@ -52,12 +60,18 @@ MODEL_REGISTRY: dict[str, type[BaseModel]] = {
         PlannerDecision,
         WorldBible,
         Beat,
+        CachedChoice,
+        ChoiceCache,
         Branch,
         StoryFramework,
         SceneOutline,
         DialogueLine,
         DialogueScript,
+        CastRoster,
         NPCProfile,
+        Illustration,
+        ImageCharacter,
+        ImageMetrics,
         Issue,
         ReviewReport,
         GameOutput,

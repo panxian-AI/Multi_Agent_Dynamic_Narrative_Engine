@@ -7,6 +7,13 @@ venv/
 .mypy_cache/
 .ruff_cache/
 runtime/
+models/
 dist/
 build/
 *.egg-info/
+*.spec
+selftest_result.txt
+selftest_real_result.txt
+runtime_selftest/
+.tmp_*/
+.tmp_*.py

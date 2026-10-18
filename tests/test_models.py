@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from madne.models import (
     Beat,
     Branch,
+    CachedChoice,
+    ChoiceCache,
     DialogueLine,
     DialogueScript,
     GameOutput,
@@ -91,6 +93,43 @@ def test_game_output_engine_payload():
         {"id": "C", "text": "选项2"},
     ]
     assert payload["scene"]["scene_id"] == payload["script"]["scene_id"]
+
+
+def test_choice_cache_navigation_and_two_layers():
+    cache = ChoiceCache(
+        session_id="s",
+        cycle=1,
+        framework_hash="h",
+        options=[
+            CachedChoice(
+                path=["B", "B1"],
+                description="下一层选项",
+                requirements=["需要情报"],
+            ),
+            CachedChoice(
+                path=["B", "B1", "B1a"],
+                description="第二层选项",
+            ),
+        ],
+    )
+
+    assert cache.next_choices("B")[0].path[-1] == "B1"
+    assert cache.grandchildren("B", "B1")[0].path[-1] == "B1a"
+    branches = cache.as_branches("B")
+    assert branches[0].branch_id == "B1"
+    assert branches[0].requirements == ["需要情报"]
+
+
+def test_choice_cache_rejects_orphan_second_layer():
+    with pytest.raises(ValidationError):
+        ChoiceCache(
+            options=[
+                CachedChoice(
+                    path=["B", "B1", "B1a"],
+                    description="缺少父节点",
+                )
+            ]
+        )
 
 
 def test_game_output_rejects_scene_script_mismatch():

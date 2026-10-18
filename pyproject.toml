@@ -15,6 +15,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# 本地 GPU 生图后端（IMG_BACKEND=diffusers）
+image = [
+    "torch>=2.0",
+    "diffusers>=0.25",
+    "transformers>=4.35",
+    "accelerate>=0.24",
+    "Pillow>=10.0",
+]
+# CLIP-I / DINO 人物一致性验收（IMG_METRICS=1）
+metrics = [
+    "torch>=2.0",
+    "open_clip_torch>=2.24",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+]
 
 [project.scripts]
 madne = "madne.cli:app"

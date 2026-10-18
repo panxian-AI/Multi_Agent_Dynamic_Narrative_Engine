@@ -19,7 +19,7 @@ class PlannerAI(BaseAgent):
 硬性约束：
 1. 只能从给定模板中选择一个，禁止发明新步骤或修改 Agent 名称。
 2. 首次创作（无已有世界观）选择 cold_start。
-3. 续写（已有世界观与历史）选择 continuation。
+3. 只要已有世界观或历史，就必须选择 continuation，绝不能回到 cold_start。
 4. 只输出 PlannerDecision JSON，不要输出完整步骤列表。"""
 
     def plan(
@@ -49,6 +49,8 @@ class PlannerAI(BaseAgent):
         template = decision.template
         if template not in TEMPLATE_STEPS:
             template = "continuation" if has_existing_world else "cold_start"
+        if has_existing_world and template != "continuation":
+            template = "continuation"
 
         focus = decision.priority_focus or brief.core_elements
         return build_plan(template, priority_focus=focus, pacing=decision.pacing)

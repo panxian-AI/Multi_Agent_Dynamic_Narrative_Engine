@@ -62,6 +62,8 @@ TEMPLATE_STEPS: dict[str, list[dict]] = {
                 "compressed_memory",
                 "player_input",
                 "previous_framework",
+                "previous_scene",
+                "prefetched_choices",
             ],
             "output_key": "framework",
             "fallback": "retry",
@@ -69,7 +71,7 @@ TEMPLATE_STEPS: dict[str, list[dict]] = {
         {
             "step_id": "03_filler",
             "agent": "filler",
-            "input_keys": ["framework", "world", "npcs"],
+            "input_keys": ["framework", "world", "npcs", "previous_scene"],
             "output_key": "scene",
             "fallback": "retry",
         },
