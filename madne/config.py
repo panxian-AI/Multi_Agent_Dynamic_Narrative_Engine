@@ -166,6 +166,8 @@ class Settings:
 
     # diffusers（本地 GPU / CPU）
     img_model: str = "stabilityai/sd-turbo"
+    # 单文件权重（.safetensors / .ckpt）；设置后不再下载 diffusers 权重
+    img_model_path: Path | None = None
     model_cache_dir: Path = Path("models")
     img_allow_cpu: bool = False
     img_ip_adapter_dir: Path | None = None
@@ -253,6 +255,9 @@ class Settings:
             comfyui_timeout=max(10, _env_int("COMFYUI_TIMEOUT", 60)),
             img_model=os.getenv(
                 "IMG_MODEL", "stabilityai/sd-turbo"
+            ),
+            img_model_path=(
+                _env_path("IMG_MODEL_PATH") or _env_path("IMG_SINGLE_FILE")
             ),
             model_cache_dir=_env_path("MODEL_CACHE_DIR", Path("models"))
             or Path("models"),

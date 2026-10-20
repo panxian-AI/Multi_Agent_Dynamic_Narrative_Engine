@@ -488,8 +488,10 @@ class ApiConfigDialog(tk.Toplevel):
                 f"当前：本地 SD，单张上限 {timeout} 秒。\n"
                 f"模型：{model}（源码运行可在 .env 用 IMG_MODEL 修改）\n"
                 "分辨率/步数由 IMG_WIDTH / IMG_HEIGHT / IMG_STEPS 控制。\n"
-                "首次生图会自动下载权重（约 2.4GB）；官方站点失败会自动切到 "
-                "hf-mirror.com，下载支持断点续传、进度写入运行日志。\n"
+                "首次生图会自动下载权重（约 2.4GB）；若项目/exe 目录已有 "
+                "sd_turbo.safetensors，会优先直接加载本地单文件。\n"
+                "官方站点失败会自动切到 hf-mirror.com，下载支持断点续传、"
+                "进度写入运行日志。\n"
                 "超时或失败时本回合不生成插图，文本剧情继续。"
             )
             return

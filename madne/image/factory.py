@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ..config import Settings
@@ -9,6 +10,7 @@ from ..exceptions import ImageTimeoutError
 from .base import ImageGenClient, ImageRequest, ImageResult
 from .comfyui import ComfyUIImageGenerator
 from .diffusers import DiffusersImageGenerator
+from .downloads import find_local_checkpoint
 from .hunyuan import ARK_BASE_URL, ARK_MODEL, OpenAICompatImageGenerator
 from .mock import MockImageGenerator
 
@@ -63,6 +65,13 @@ def create_image_client(settings: Settings) -> ImageGenClient:
         )
 
     if backend == "diffusers":
+        checkpoint = settings.img_model_path
+        if checkpoint is not None and not Path(checkpoint).is_file():
+            checkpoint = None
+        if checkpoint is None:
+            checkpoint = find_local_checkpoint(
+                settings.img_model, settings.model_cache_dir
+            )
         return FallbackImageGenerator(
             DiffusersImageGenerator(
                 model=settings.img_model,
@@ -71,6 +80,7 @@ def create_image_client(settings: Settings) -> ImageGenClient:
                 ip_adapter_dir=settings.img_ip_adapter_dir,
                 timeout=settings.img_timeout,
                 hf_endpoint=settings.hf_endpoint,
+                local_checkpoint=checkpoint,
             )
         )
 

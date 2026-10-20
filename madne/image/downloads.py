@@ -555,6 +555,64 @@ def is_model_cached(model: str, cache_dir: str | Path) -> bool:
     return _cached_snapshot(model, cache_dir) is not None
 
 
+def cached_snapshot_dir(model: str, cache_dir: str | Path) -> Path | None:
+    """公开的本地快照查询（用于单文件加载时复用其组件配置）。"""
+    return _cached_snapshot(model, cache_dir)
+
+
+def find_local_checkpoint(
+    model: str,
+    cache_dir: str | Path,
+    extra_dirs: list[str | Path] | None = None,
+) -> Path | None:
+    """查找本地单文件权重，避免再从 Hub 下载。
+
+    优先级：``IMG_MODEL`` 本身就是文件路径 > ``MODEL_CACHE_DIR`` >
+    其父目录（exe / 项目根目录）> 当前工作目录。
+    文件名按仓库名匹配，``-`` 与 ``_`` 视为等价
+    （如 ``stabilityai/sd-turbo`` → ``sd_turbo.safetensors``）。
+    """
+    direct = Path(model)
+    if (
+        direct.is_file()
+        and direct.suffix.lower() in {".safetensors", ".ckpt"}
+    ):
+        return direct.resolve()
+
+    base = model.rstrip("/\\").split("/")[-1].split("\\")[-1].lower()
+    names = {
+        f"{base}.safetensors",
+        f"{base}.ckpt",
+        f"{base.replace('-', '_')}.safetensors",
+        f"{base.replace('_', '-')}.safetensors",
+    }
+
+    cache_path = Path(cache_dir)
+    search_dirs: list[Path] = [
+        cache_path,
+        cache_path.parent,
+        Path.cwd(),
+    ]
+    for extra in extra_dirs or []:
+        search_dirs.append(Path(extra))
+
+    seen: set[Path] = set()
+    for folder in search_dirs:
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        for name in names:
+            candidate = resolved / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+
 def _say(log: LogFn | None, message: str) -> None:
     if log is None:
         return

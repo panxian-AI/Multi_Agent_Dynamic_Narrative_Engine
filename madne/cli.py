@@ -20,7 +20,11 @@ from .image import (
     build_scene_prompt,
     create_image_client,
 )
-from .image.downloads import download_model, is_model_cached
+from .image.downloads import (
+    download_model,
+    find_local_checkpoint,
+    is_model_cached,
+)
 from .image.prompts import select_involved_npcs
 from .llm import create_llm_client
 from .models import (
@@ -476,6 +480,10 @@ def models_download(
             else "huggingface.co（网络失败自动回退 hf-mirror.com）"
         )
     )
+    local = find_local_checkpoint(target_model, target_dir)
+    if local is not None:
+        typer.echo(f"检测到本地单文件权重：{local}，无需下载。")
+        return
     try:
         result = download_model(
             target_model,
@@ -503,16 +511,22 @@ def models_status(
     settings = Settings.from_env()
     target_model = (model or settings.img_model).strip()
     target_dir = Path(cache_dir) if cache_dir else settings.model_cache_dir
-    cached = is_model_cached(target_model, target_dir)
+    local = find_local_checkpoint(target_model, target_dir)
+    cached = local is not None or is_model_cached(target_model, target_dir)
     typer.echo(
         json.dumps(
             {
                 "model": target_model,
                 "cache_dir": str(Path(target_dir).resolve()),
                 "cached": cached,
+                "model_file": str(local) if local is not None else None,
                 "hf_endpoint": settings.hf_endpoint or "https://huggingface.co",
                 "note": (
-                    "已缓存，可直接生图。"
+                    (
+                        f"使用本地单文件：{local.name}"
+                        if local is not None
+                        else "已缓存，可直接生图。"
+                    )
                     if cached
                     else "未缓存：运行 madne models download 预下载。"
                 ),

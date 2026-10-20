@@ -14,6 +14,7 @@ from madne.hf_env import (
 )
 from madne.image.downloads import (
     _DiskProgress,
+    find_local_checkpoint,
     is_model_cached,
     select_files,
 )
@@ -175,6 +176,39 @@ def test_is_model_cached_requires_component_weights(tmp_path):
         (snapshot / component / "weights.fp16.safetensors").write_bytes(b"x")
 
     assert is_model_cached("org/demo", tmp_path)
+
+
+def test_find_local_checkpoint_matches_repo_name(tmp_path):
+    cache_dir = tmp_path / "models"
+    cache_dir.mkdir()
+    checkpoint = tmp_path / "sd_turbo.safetensors"
+    checkpoint.write_bytes(b"weights")
+
+    found = find_local_checkpoint("stabilityai/sd-turbo", cache_dir)
+
+    assert found == checkpoint.resolve()
+
+
+def test_find_local_checkpoint_prefers_explicit_file(tmp_path):
+    explicit = tmp_path / "my_model.safetensors"
+    explicit.write_bytes(b"weights")
+    cache_dir = tmp_path / "models"
+    cache_dir.mkdir()
+    (cache_dir / "sd_turbo.safetensors").write_bytes(b"other")
+
+    found = find_local_checkpoint(str(explicit), cache_dir)
+
+    assert found == explicit.resolve()
+
+
+def test_find_local_checkpoint_returns_none_without_file(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    cache_dir = tmp_path / "models"
+    cache_dir.mkdir()
+
+    assert find_local_checkpoint("stabilityai/sd-turbo", cache_dir) is None
 
 
 def test_configure_hf_env_disable_xet_for_mirror(monkeypatch):

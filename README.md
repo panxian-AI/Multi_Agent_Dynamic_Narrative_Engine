@@ -120,6 +120,10 @@ IMG_HEIGHT=512
 IMG_STEPS=4
 IMG_GUIDANCE=0
 IMG_ALLOW_CPU=0                # 无 GPU 时可设为 1，但会远超 1 分钟
+# 已有单文件权重（.safetensors / .ckpt）时直接加载，跳过下载：
+# IMG_MODEL_PATH=./sd_turbo.safetensors
+# 也可以不配置：会自动在 MODEL_CACHE_DIR、其父目录（exe/项目根目录）
+# 与当前目录查找与模型同名的文件（如 sd-turbo → sd_turbo.safetensors）。
 # 国内网络：不配置也会在官方站点失败后自动回退 hf-mirror.com
 # 配置后只使用指定镜像
 # MADNE_HF_ENDPOINT=https://hf-mirror.com
@@ -175,6 +179,17 @@ madne models download --model stabilityai/sdxl-turbo
 
 > 需要登录/接受许可的仓库（如 SDXL 官方 base）请先在 Hugging Face 页面
 > 同意条款，并设置 `HF_TOKEN`；否则会返回 401/403。
+
+如果本地已有单文件权重（例如把 `sd_turbo.safetensors` 放在项目根目录），
+下载器会**直接使用该文件**，不会再次联网：
+
+- 显式指定：`IMG_MODEL_PATH=./sd_turbo.safetensors`；
+- 不配置也会自动查找：`MODEL_CACHE_DIR`、其父目录（exe/项目根目录）、
+  当前目录下与模型同名的 `.safetensors` / `.ckpt`
+  （`stabilityai/sd-turbo` → `sd_turbo.safetensors` 或 `sd-turbo.safetensors`）。
+- 单文件通过 `from_single_file` 加载；若已有 diffusers 缓存，会复用其中的
+  组件配置以完全离线。`madne health` 的 `model_file` 字段会显示当前使用的
+  本地权重路径。
 
 > 安装包体积主要来自 `torch`/CUDA 运行库，**SD 权重默认不打包进 exe**。
 > 权重会在首次生图时下载到 `MODEL_CACHE_DIR`（桌面版为 exe 同目录 `models`）。

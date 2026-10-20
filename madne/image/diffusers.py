@@ -14,7 +14,11 @@ from typing import Any
 from ..exceptions import ImageGenError, ImageTimeoutError
 from ..hf_env import configure_hf_env, resolve_endpoint
 from .base import ImageRequest, ImageResult
-from .downloads import download_model, is_model_cached
+from .downloads import (
+    cached_snapshot_dir,
+    download_model,
+    is_model_cached,
+)
 
 
 class DiffusersImageGenerator:
@@ -34,11 +38,15 @@ class DiffusersImageGenerator:
         ip_adapter_dir: str | Path | None = None,
         timeout: int = 60,
         hf_endpoint: str | None = None,
+        local_checkpoint: str | Path | None = None,
     ) -> None:
         self.model = model
         self.cache_dir = Path(cache_dir)
         self.allow_cpu = allow_cpu
         self.hf_endpoint = hf_endpoint or ""
+        self.local_checkpoint = (
+            Path(local_checkpoint) if local_checkpoint is not None else None
+        )
         self.ip_adapter_dir = (
             Path(ip_adapter_dir) if ip_adapter_dir is not None else None
         )
@@ -87,6 +95,20 @@ class DiffusersImageGenerator:
                 "available": False,
                 "detail": "未检测到 GPU；设置 IMG_ALLOW_CPU=1 可使用 CPU（非常慢）",
             }
+
+        if self._has_local_checkpoint():
+            assert self.local_checkpoint is not None
+            return {
+                "backend": self.backend_name,
+                "available": True,
+                "model_cached": True,
+                "model_file": str(self.local_checkpoint),
+                "detail": (
+                    f"{gpu or 'cpu'} · 本地单文件 "
+                    f"{self.local_checkpoint.name} · 单张≤{self.timeout}s"
+                ),
+            }
+
         cached = self._model_cached()
         endpoint = resolve_endpoint(self.hf_endpoint) or "https://huggingface.co"
         detail = (
@@ -108,7 +130,15 @@ class DiffusersImageGenerator:
 
     def _model_cached(self) -> bool:
         """只查本地缓存，不触发网络下载。"""
-        return is_model_cached(self.model, self.cache_dir)
+        return self._has_local_checkpoint() or is_model_cached(
+            self.model, self.cache_dir
+        )
+
+    def _has_local_checkpoint(self) -> bool:
+        return (
+            self.local_checkpoint is not None
+            and self.local_checkpoint.is_file()
+        )
 
     # ------------------------------------------------------------------ 生成入口
     def generate(self, request: ImageRequest) -> ImageResult:
@@ -250,6 +280,11 @@ class DiffusersImageGenerator:
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        # 本地单文件（sd_turbo.safetensors 等）：不联网、不用 diffusers 缓存。
+        if self._has_local_checkpoint():
+            pipe = self._load_local_checkpoint(dtype, _status)
+            return self._finalize(pipe, device, torch)
+
         # 先把权重下完（只拉必要文件，支持断点续传与镜像回退），
         # 之后加载时只读本地缓存，避免逐个文件联网校验导致卡住。
         if not self._model_cached():
@@ -315,6 +350,69 @@ class DiffusersImageGenerator:
                     f"加载 diffusers 模型失败: {fallback_exc}"
                 ) from fallback_exc
 
+        return self._finalize(pipe, device, torch)
+
+    def _load_local_checkpoint(
+        self, dtype: Any, _status: Any
+    ) -> Any:
+        """用 ``from_single_file`` 加载本地 .safetensors / .ckpt。"""
+        assert self.local_checkpoint is not None
+        checkpoint = self.local_checkpoint
+
+        try:
+            from diffusers import (
+                StableDiffusionPipeline,
+                StableDiffusionXLPipeline,
+            )
+        except ImportError as exc:  # 与主路径保持一致的错误信息
+            raise ImageGenError(
+                "diffusers 后端需要安装 torch / diffusers / transformers / accelerate"
+            ) from exc
+
+        pipeline_cls: Any = StableDiffusionPipeline
+        config_dir = cached_snapshot_dir(self.model, self.cache_dir)
+        if config_dir is not None:
+            try:
+                import json
+
+                index = json.loads(
+                    (config_dir / "model_index.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if index.get("_class_name") == "StableDiffusionXLPipeline":
+                    pipeline_cls = StableDiffusionXLPipeline
+            except Exception:
+                pass
+
+        _status(
+            f"使用本地单文件模型：{checkpoint.name}；"
+            "正在加载（首次通常 10-40 秒）…"
+        )
+        kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "use_safetensors": checkpoint.suffix.lower() == ".safetensors",
+        }
+        if config_dir is not None:
+            # 复用已下载的组件配置，彻底离线。
+            kwargs["config"] = str(config_dir)
+            kwargs["local_files_only"] = True
+
+        try:
+            return pipeline_cls.from_single_file(
+                str(checkpoint), **kwargs
+            )
+        except Exception as exc:
+            raise ImageGenError(
+                f"加载本地单文件模型失败（{checkpoint}）：{exc}。"
+                "若缺少管线配置，请先执行 `madne models download`，"
+                "或设置 IMG_MODEL_PATH 指向有效的权重文件。"
+            ) from exc
+
+    def _finalize(
+        self, pipe: Any, device: Any, torch_module: Any
+    ) -> tuple[Any, Any, Any]:
+        """公共后处理：上设备、降显存、缓存管线。"""
         pipe = pipe.to(device)
         try:
             pipe.set_progress_bar_config(disable=True)
@@ -332,14 +430,14 @@ class DiffusersImageGenerator:
                 pass
         if device.type == "cuda":
             try:
-                torch.backends.cuda.matmul.allow_tf32 = True
+                torch_module.backends.cuda.matmul.allow_tf32 = True
             except Exception:
                 pass
 
         self._pipeline = pipe
         self._device = device
-        self._torch = torch
-        return pipe, device, torch
+        self._torch = torch_module
+        return pipe, device, torch_module
 
     def _apply_reference_injection(
         self,
