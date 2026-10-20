@@ -362,8 +362,35 @@ python -m madne run --mock -i "..." --no-illustrate
 powershell -NoProfile -ExecutionPolicy Bypass -File build_exe.ps1
 ```
 
-也可以直接双击 `build_exe.bat`。脚本会构建、复制说明文档并运行 EXE 自检，
-自检完成后自动清理分发包中的临时产物。
+也可以直接双击 `build_exe.bat`。脚本会：
+
+1. 优先使用项目内 `.venv\Scripts\python.exe`（不存在则用 PATH 中的 `python`）；
+2. 自动安装构建与运行依赖：`torch`（默认 CUDA 12.8 轮子）、
+   `diffusers`、`transformers`、`accelerate`、`safetensors`、`huggingface_hub`、
+   `pyinstaller`，并安装项目 `[image]` 依赖；
+3. 用 PyInstaller 收集 `torch/diffusers/transformers/huggingface_hub` 等动态模块，
+   保证打包后的 exe 仍可使用本地 SD 后端；
+4. 构建、复制说明文档并运行 EXE 自检，自检完成后自动清理临时产物。
+
+常用参数：
+
+```powershell
+# 依赖已安装好时跳过 pip
+powershell -NoProfile -ExecutionPolicy Bypass -File build_exe.ps1 -SkipDeps
+
+# 目录版：启动快，适合包含 torch/CUDA 的构建（产物 dist\MADNE\MADNE.exe）
+powershell -NoProfile -ExecutionPolicy Bypass -File build_exe.ps1 -OneDir
+
+# 只用 CPU 版 torch（体积更小，推理很慢）
+powershell -NoProfile -ExecutionPolicy Bypass -File build_exe.ps1 -TorchIndex ""
+```
+
+> 包含 torch/CUDA 时 `--onefile` 会生成数 GB 的单文件 exe，每次启动都要解压，
+> 实际分发建议使用 `-OneDir`；此时把整个 `dist\MADNE` 目录一起发给测试者。
+
+> 桌面版使用本地单文件权重时，把 `sd_turbo.safetensors` 放在
+> `MADNE.exe` 同目录（或同目录的 `models\` 下）即可；构建脚本不会复制
+> 这个数 GB 的权重文件。
 
 无界面自检：
 
