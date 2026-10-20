@@ -23,7 +23,7 @@ from ..agents import (
 )
 from ..agents.prompts import format_review_feedback
 from ..config import Settings
-from ..exceptions import EngineError
+from ..exceptions import EngineError, ImageTimeoutError
 from ..image import (
     ImageGenClient,
     ImageRequest,
@@ -773,7 +773,15 @@ class Orchestrator:
         prompt_limit = (
             256
             if self.settings.img_backend
-            in {"seedream", "hunyuan", "openai", "openai_compat"}
+            in {
+                "seedream",
+                "hunyuan",
+                "openai",
+                "openai_compat",
+                "ark",
+                "doubao",
+                "volcengine",
+            }
             else None
         )
         prompt = build_scene_prompt(
@@ -801,6 +809,13 @@ class Orchestrator:
         filename = f"cycle_{ctx.cycle:03d}.png"
         target = runtime.state_dir / "assets" / filename
         started = time.perf_counter()
+        detail = "正在生成场景插图…"
+        if self.settings.img_backend == "diffusers":
+            detail = (
+                "正在生成场景插图（本地 SD；首次运行需下载 "
+                f"「{self.settings.img_model}」约 2-3GB，"
+                "可通过 madne models download 预下载）…"
+            )
         self._log(
             runtime,
             ctx,
@@ -809,8 +824,46 @@ class Orchestrator:
             attempt=1,
             tokens=0,
             duration_ms=0,
-            detail="正在生成场景插图…",
+            detail=detail,
         )
+
+        last_percent = -1
+
+        def _progress(current: int, total: int) -> None:
+            nonlocal last_percent
+            if total <= 0:
+                return
+            percent = min(100, int(current * 100 / total))
+            # 步数多时按 10% 节流，避免日志过密；保留 0% 与 100%。
+            if percent not in (0, 100) and percent - last_percent < 10:
+                return
+            last_percent = percent
+            self._log(
+                runtime,
+                ctx,
+                step,
+                status="running",
+                attempt=1,
+                tokens=0,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                detail=(
+                    f"正在生成本回合插图：{current}/{total}"
+                    f"（{percent}%）"
+                ),
+            )
+
+        def _status(message: str) -> None:
+            self._log(
+                runtime,
+                ctx,
+                step,
+                status="running",
+                attempt=1,
+                tokens=0,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                detail=message,
+            )
+
         try:
             result = self.image_client.generate(
                 ImageRequest(
@@ -827,8 +880,29 @@ class Orchestrator:
                     reference_images=references,
                     consistency_mode=mode,
                     style=self.settings.img_style,
+                    on_progress=_progress,
+                    on_status=_status,
                 )
             )
+        except ImageTimeoutError as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            message = (
+                f"插图生成超时（>{self.settings.img_timeout}s），"
+                "本回合不生成插图"
+            )
+            ctx.add_warning(message)
+            self._log(
+                runtime,
+                ctx,
+                step,
+                status="timeout",
+                attempt=1,
+                tokens=0,
+                duration_ms=duration_ms,
+                error=str(exc),
+                detail=message,
+            )
+            return None
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
             ctx.add_warning(f"插图生成失败，本回合仅交付文本：{exc}")

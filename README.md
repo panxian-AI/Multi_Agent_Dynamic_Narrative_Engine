@@ -44,9 +44,10 @@ LLM_MAX_TOKENS=8192
 MADNE_MOCK=0
 MADNE_PREFETCH_CHOICES=1
 
-# 场景插图：三选一（mock / comfyui / diffusers），默认 mock
+# 场景插图：diffusers（本地 SD，默认）/ mock / ark / comfyui
 IMG_ENABLED=1
-IMG_BACKEND=mock
+IMG_BACKEND=diffusers
+IMG_TIMEOUT=60
 IMG_WIDTH=1024
 IMG_HEIGHT=768
 IMG_CONSISTENCY_MODE=self_attn
@@ -81,25 +82,111 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 - `characters`：本场涉及角色的稳定外观描述；
 - `consistency_mode`、`seed`、`reference_images`、`metrics` 等。
 
-三种后端（`IMG_BACKEND`）：
+可用后端（`IMG_BACKEND`）：
 
 | 值 | 依赖 | 说明 |
 |---|---|---|
-| `mock`（默认） | 无 | 纯标准库生成占位 PNG，CI / 无 GPU 可用 |
-| `seedream` | Seedream / OpenAI 兼容图像 API | 在「API 配置」窗口的“生图 API”区域填写 Key、Base URL、模型与尺寸；`hunyuan` 保留为兼容别名 |
+| `diffusers`（默认） | 本地 GPU + torch/diffusers | 默认 `sd-turbo` 本地生成；单张默认限时 60 秒 |
+| `mock` | 无 | 纯标准库生成占位 PNG，CI / 无 GPU 时自动降级使用 |
 | `comfyui` | 部署方的 ComfyUI 实例 | 通过 `COMFYUI_URL` 提交工作流；自定义 InstantID 工作流可使用 `{{REFERENCE_IMAGE}}` 占位符 |
-| `diffusers` | 本地 GPU + torch/diffusers | SDXL；`id_injection` 可用 `IMG_IP_ADAPTER_DIR` 注入角色定妆照 |
+| `ark` | 火山方舟 / 豆包 Seedream API | `doubao-seedream-4-0-250828`；也兼容 `seedream` / `hunyuan` 别名 |
+
+**本地 SD 是默认路径**；在线 API 需要在「API 配置」窗口中选择“在线 API（可选）”
+才会启用。即使本机保存过生图 API Key，只要生图方式仍是“本地 SD”，API 就不会
+被自动使用。
 
 每个回合（也就是每次显示新行动选项的界面）都会根据当前 `SceneOutline` 的
 场景、动作和 `involved_npcs` 的外观生成一张插图；插图会出现在玩家界面
 故事正文上方，并写入 `GameOutput.illustration`。
 
-### Seedream / OpenAI 兼容图像接口
+### 本地 SD 生成（默认路径）
+
+```powershell
+# 安装本地 SD 依赖（CPU 版）
+python -m pip install -e ".[image]"
+
+# NVIDIA GPU 建议先按 https://pytorch.org/get-started/locally/
+# 选择对应 CUDA 版本的 torch 安装命令，再执行上面的命令
+```
+
+```dotenv
+IMG_ENABLED=1
+IMG_BACKEND=diffusers
+IMG_TIMEOUT=60                 # 单张生成上限（秒）
+MODEL_CACHE_DIR=./models       # 首次运行会下载权重到这里
+IMG_MODEL=stabilityai/sd-turbo   # 轻量快速模型（约 2.5GB）
+IMG_WIDTH=512
+IMG_HEIGHT=512
+IMG_STEPS=4
+IMG_GUIDANCE=0
+IMG_ALLOW_CPU=0                # 无 GPU 时可设为 1，但会远超 1 分钟
+# 国内网络：不配置也会在官方站点失败后自动回退 hf-mirror.com
+# 配置后只使用指定镜像
+# MADNE_HF_ENDPOINT=https://hf-mirror.com
+# 镜像可能把权重重定向到 Xet CAS，慢速链路易读超时；
+# 下载器默认已把读超时放宽到 120 秒，可按需覆盖
+# HF_HUB_DOWNLOAD_TIMEOUT=120
+
+# 可选：显存充足时改用 SDXL 提升画质（约 7GB）
+# IMG_MODEL=stabilityai/stable-diffusion-xl-base-1.0
+# IMG_WIDTH=1024
+# IMG_HEIGHT=768
+# IMG_STEPS=28
+# IMG_GUIDANCE=5
+```
+
+`diffusers` 后端会自动识别 SD 1.5 / SD 2.1 / SDXL 管线。默认的
+`sd-turbo` 只需 4 步，适合 8GB 显存并稳定控制在 60 秒内；需要更高画质时
+再切换到 SDXL。
+
+- 模型权重只加载一次；**首次下载/加载时间不计入 `IMG_TIMEOUT`**。
+- 超时时间可在「API 配置」窗口的“单张时间上限”中修改（10–600 秒，默认 60）；
+  CLI 使用 `IMG_TIMEOUT`。
+- 本地 SD 会按采样步数推送进度：玩家界面显示“正在生成本回合插图：2/4（50%）”，
+  运行日志同步记录。
+- 超过时限会立即中止采样，**本回合不生成插图**并在界面提示；不会用 Mock
+  占位图代替。其他非超时失败仍会降级 Mock。
+- 在较慢的 GPU 上建议降低 `IMG_STEPS`（例如 16–20）或分辨率，以保证
+  每张在 1 分钟内完成。
+- `IMG_ALLOW_CPU=0` 时如果没有可用 GPU，会直接降级 Mock；设 `1` 后
+  CPU 推理可能远超过 60 秒。
+
+#### 权重下载慢 / 下载失败
+
+下载逻辑已针对国内网络做了三点优化：
+
+1. **只拉必要文件**：仓库里的 fp32 / `.bin` / `.onnx` 等副本会被跳过，
+   每个组件优先取 `*.fp16.safetensors`，sd-turbo 实际下载量约 2.4GB；
+2. **自动镜像回退**：直连 `huggingface.co` 超时或失败后自动改用
+   `hf-mirror.com`；镜像会把权重重定向到 Xet CAS，下载器已把读超时
+   从默认 10 秒放宽到 120 秒，避免慢速链路上反复中断；
+3. **断点续传 + 落盘进度**：中断后重跑会跳过已完成文件，日志显示
+   `正在下载模型权重：45%（1.02 GB / 2.26 GB）`（按实际落盘字节统计，
+   不会因重试而虚高）；超过 15 分钟的孤儿临时分片会自动清理。
+
+手动预下载（推荐在第一次生图前执行）：
+
+```powershell
+madne models status              # 查看是否已缓存（不联网）
+madne models download            # 下载 IMG_MODEL 到 MODEL_CACHE_DIR
+madne models download --mirror   # 强制走 hf-mirror.com
+madne models download --model stabilityai/sdxl-turbo
+```
+
+> 需要登录/接受许可的仓库（如 SDXL 官方 base）请先在 Hugging Face 页面
+> 同意条款，并设置 `HF_TOKEN`；否则会返回 401/403。
+
+> 安装包体积主要来自 `torch`/CUDA 运行库，**SD 权重默认不打包进 exe**。
+> 权重会在首次生图时下载到 `MODEL_CACHE_DIR`（桌面版为 exe 同目录 `models`）。
+> `python -m madne health` 会显示 `model_cached`、`cache_dir` 与当前
+> `hf_endpoint`；未缓存时可用 `madne models download` 提前下载。
+
+### 可选：Seedream / OpenAI 兼容图像接口
 
 桌面版的推荐配置方式：
 
 1. 打开「API 配置」窗口；
-2. 在“生图 API（Seedream / OpenAI 兼容）”区域填写生图 API Key；
+2. 将“生图方式”切换为“在线 API（可选）”，再填写生图 API Key；
 3. **Base URL 必须填服务商控制台提供的 OpenAI 兼容地址**，不能填混元默认
    地址（`https://api.hunyuan.cloud.tencent.com/v1` 不提供 Seedream 图像接口，
    会返回 404）。例如火山方舟为
@@ -132,16 +219,28 @@ python -m madne run --real -i "我想要一个赛博朋克世界里，关于记�
 源码 / CLI 也可以用环境变量：
 
 ```dotenv
-IMG_BACKEND=seedream
-IMG_API_KEY=sk-your-image-key
-# 必填：服务商提供的 OpenAI 兼容地址
+# 火山方舟 / 豆包 Seedream 4.0
+IMG_BACKEND=ark
+IMG_API_KEY=ark-your-key                  # 也可以使用 ARK_API_KEY
 IMG_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-IMG_API_MODEL=Seedream-Image-v5.0-lite
-IMG_WIDTH=1280
-IMG_HEIGHT=720
-# 可选：Seedream 尺寸档位（2K / 4K），留空则用宽×高
-IMG_API_SIZE=
+IMG_API_MODEL=doubao-seedream-4-0-250828
+IMG_API_SIZE=2K
+# 方舟专用参数（与官方 REST 示例一致）
+IMG_API_WATERMARK=1
+IMG_API_SEQUENTIAL=disabled
+IMG_API_STREAM=0
+
+# 其他 OpenAI 兼容图像网关
+# IMG_BACKEND=seedream
+# IMG_BASE_URL=https://your-gateway/v1
+# IMG_API_MODEL=your-image-model
 ```
+
+`IMG_BACKEND=ark` 时客户端会发送：`model`、`prompt`、`size`、
+`response_format="url"`、`sequential_image_generation`、`stream`、
+`watermark`，然后自动下载响应中的 URL 并保存为 PNG。也支持
+`ARK_API_KEY` / `ARK_BASE_URL` / `ARK_IMAGE_MODEL` / `ARK_IMAGE_SIZE`
+环境变量作为别名。不要将真实 Key 写入仓库或分发包。
 
 > Seedream / 混元等接口的 Prompt 长度上限较严格，代码会自动使用精简提示词
 > 并截断到 256 字符。若你的服务商使用腾讯云签名接口（SecretId/SecretKey），
@@ -168,8 +267,8 @@ IMG_API_SIZE=
 桌面玩家界面会在故事正文上方展示本回合插图；管理员界面可在完整 JSON 中查看
 `illustration` 元数据，RunLog 也会记录插图后端、尺寸与耗时。
 
-任意后端失败都会自动降级为 mock 占位图，并在 `illustration.warnings` 与
-RunLog 中记录原因，文本回合不受影响。
+非超时的生图失败都会自动降级为 mock 占位图，并在 `illustration.warnings` 与
+RunLog 中记录原因；**超过单张时间上限时不会出图**，本回合直接跳过插图并提示。
 
 ```powershell
 # 本地 GPU 后端依赖（可选）

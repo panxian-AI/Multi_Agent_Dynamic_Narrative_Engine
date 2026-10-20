@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import Settings
+from ..exceptions import ImageTimeoutError
 from .base import ImageGenClient, ImageRequest, ImageResult
 from .comfyui import ComfyUIImageGenerator
 from .diffusers import DiffusersImageGenerator
-from .hunyuan import OpenAICompatImageGenerator
+from .hunyuan import ARK_BASE_URL, ARK_MODEL, OpenAICompatImageGenerator
 from .mock import MockImageGenerator
 
 
@@ -35,7 +36,10 @@ class FallbackImageGenerator:
     def generate(self, request: ImageRequest) -> ImageResult:
         try:
             return self.primary.generate(request)
-        except Exception as exc:  # 生图失败不得中断文本回合
+        except ImageTimeoutError:
+            # 用户设置的单张时限已到：本回合直接不出图，不返回占位图。
+            raise
+        except Exception as exc:  # 其他生图失败可降级占位图
             result = self.fallback.generate(request)
             result.warnings.insert(
                 0,
@@ -54,7 +58,7 @@ def create_image_client(settings: Settings) -> ImageGenClient:
                 base_url=settings.comfyui_url,
                 checkpoint=settings.comfyui_checkpoint,
                 workflow_path=settings.comfyui_workflow,
-                timeout=settings.comfyui_timeout,
+                timeout=settings.img_timeout,
             )
         )
 
@@ -65,21 +69,44 @@ def create_image_client(settings: Settings) -> ImageGenClient:
                 cache_dir=settings.model_cache_dir,
                 allow_cpu=settings.img_allow_cpu,
                 ip_adapter_dir=settings.img_ip_adapter_dir,
+                timeout=settings.img_timeout,
+                hf_endpoint=settings.hf_endpoint,
             )
         )
 
-    if backend in {"seedream", "hunyuan", "openai", "openai_compat"}:
+    if backend in {
+        "seedream",
+        "hunyuan",
+        "openai",
+        "openai_compat",
+        "ark",
+        "doubao",
+        "volcengine",
+    }:
+        is_ark = backend in {"ark", "doubao", "volcengine"}
+        base_url = settings.img_base_url.strip()
+        if is_ark and not base_url:
+            base_url = ARK_BASE_URL
+        model = settings.img_api_model.strip() or ARK_MODEL
+        size = settings.img_api_size.strip()
+        if is_ark and not size:
+            size = "2K"
         return FallbackImageGenerator(
             OpenAICompatImageGenerator(
                 api_key=settings.img_api_key or "",
-                base_url=settings.img_base_url,
-                model=settings.img_api_model,
-                timeout=settings.img_api_timeout,
+                base_url=base_url,
+                model=model,
+                timeout=settings.img_timeout,
                 max_retries=settings.img_api_retries,
-                size=settings.img_api_size,
+                size=size,
                 backend_name=(
-                    "openai" if backend == "openai_compat" else backend
+                    "ark"
+                    if is_ark
+                    else ("openai" if backend == "openai_compat" else backend)
                 ),
+                watermark=settings.img_api_watermark,
+                sequential_generation=settings.img_api_sequential,
+                stream=settings.img_api_stream,
             )
         )
 
@@ -87,7 +114,8 @@ def create_image_client(settings: Settings) -> ImageGenClient:
         return MockImageGenerator(
             fallback_reason=(
                 f"未知 IMG_BACKEND='{settings.img_backend}'，已回退 mock。"
-                "可用值：mock / seedream / hunyuan / comfyui / diffusers"
+                "可用值：mock / seedream / ark / doubao / hunyuan / "
+                "comfyui / diffusers"
             )
         )
     return MockImageGenerator()

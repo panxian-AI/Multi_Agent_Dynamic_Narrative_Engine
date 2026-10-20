@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -22,6 +23,14 @@ class ImageRequest:
     reference_images: list[Path] = field(default_factory=list)
     consistency_mode: str = "self_attn"
     style: str = ""
+    # (current_step, total_steps)；用于把本地 SD 采样进度推送到 UI。
+    on_progress: Callable[[int, int], None] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # 文本状态（模型下载/加载阶段），用于向 UI/日志展示进度。
+    on_status: Callable[[str], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass(slots=True)

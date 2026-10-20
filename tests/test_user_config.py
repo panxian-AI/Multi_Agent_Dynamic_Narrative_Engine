@@ -67,6 +67,8 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
     config = ApiConfig(
         api_key="sk-llm-test",
+        img_backend="seedream",
+        img_timeout=90,
         img_api_key="sk-image-test",
         img_base_url="https://image.example/v1",
         img_model="Seedream-Image-v5.0-lite",
@@ -79,7 +81,7 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
     loaded = load_api_config()
     assert loaded.img_api_key == "sk-image-test"
     assert loaded.img_base_url == "https://image.example/v1"
-    assert loaded.img_model == DEFAULT_IMG_MODEL
+    assert loaded.img_model == "Seedream-Image-v5.0-lite"
     assert loaded.img_size == "2K"
     assert (loaded.img_width, loaded.img_height) == (1280, 720)
 
@@ -91,11 +93,24 @@ def test_image_api_config_roundtrip_and_apply(tmp_path, monkeypatch):
     assert applied.use_mock is False
     assert applied.img_enabled is True
     assert applied.img_backend == "seedream"
+    assert applied.img_timeout == 90
     assert applied.img_api_key == "sk-image-test"
     assert applied.img_base_url == "https://image.example/v1"
     assert applied.img_api_model == "Seedream-Image-v5.0-lite"
     assert applied.img_api_size == "2K"
     assert (applied.img_width, applied.img_height) == (1280, 720)
+
+
+def test_default_image_backend_is_local_even_with_api_key():
+    config = ApiConfig(
+        api_key="sk-llm-test",
+        img_api_key="sk-image-test",
+    )
+
+    applied = apply_api_config(Settings(use_mock=True), config)
+
+    assert applied.img_backend == "diffusers"
+    assert applied.img_timeout == 60
 
 
 def test_image_api_disabled_keeps_text_config():
@@ -108,7 +123,7 @@ def test_image_api_disabled_keeps_text_config():
     applied = apply_api_config(Settings(use_mock=True), config)
 
     assert applied.img_enabled is False
-    assert applied.img_backend == "mock"
+    assert applied.img_backend == "diffusers"
 
 
 def test_frozen_config_is_portable(tmp_path, monkeypatch):
@@ -121,6 +136,7 @@ def test_frozen_config_is_portable(tmp_path, monkeypatch):
 def test_frozen_app_settings_ignore_env_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(tmp_path / "MADNE.exe"))
+    monkeypatch.delenv("IMG_BACKEND", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "sk-env-llm")
     monkeypatch.setenv("IMG_API_KEY", "sk-env-image")
     monkeypatch.setenv("MADNE_MOCK", "0")
@@ -135,9 +151,11 @@ def test_frozen_app_settings_ignore_env_keys(tmp_path, monkeypatch):
 def test_frozen_app_settings_reads_portable_config(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(tmp_path / "MADNE.exe"))
+    monkeypatch.delenv("IMG_BACKEND", raising=False)
     save_api_config(
         ApiConfig(
             api_key="sk-llm-portable",
+            img_backend="seedream",
             img_api_key="sk-image-portable",
             img_base_url="https://image.example/v1",
             img_model="Seedream-Image-v5.0-lite",

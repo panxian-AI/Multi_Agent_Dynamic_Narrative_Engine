@@ -18,8 +18,8 @@ DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_MAX_TOKENS = 8192
 
-DEFAULT_IMG_BASE_URL = ""
-DEFAULT_IMG_MODEL = "Seedream-Image-v5.0-lite"
+DEFAULT_IMG_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_IMG_MODEL = "doubao-seedream-4-0-250828"
 DEFAULT_IMG_WIDTH = 1280
 DEFAULT_IMG_HEIGHT = 720
 
@@ -32,8 +32,10 @@ class ApiConfig:
     max_tokens: int = DEFAULT_MAX_TOKENS
     admin_unlocked: bool = False
 
-    # 生图 API（混元生图轻量版 / OpenAI 兼容图像接口）
+    # 生图：默认本地 SD；在线 API 为可选路径
     img_enabled: bool = True
+    img_backend: str = "diffusers"
+    img_timeout: int = 60
     img_api_key: str = ""
     img_base_url: str = DEFAULT_IMG_BASE_URL
     img_model: str = DEFAULT_IMG_MODEL
@@ -104,6 +106,24 @@ def load_api_config() -> ApiConfig:
     except (TypeError, ValueError):
         img_height = DEFAULT_IMG_HEIGHT
 
+    raw_backend = str(payload.get("img_backend") or "diffusers").strip().lower()
+    if raw_backend not in {
+        "diffusers",
+        "comfyui",
+        "mock",
+        "ark",
+        "seedream",
+        "hunyuan",
+        "openai",
+        "openai_compat",
+    }:
+        raw_backend = "diffusers"
+    try:
+        img_timeout = int(payload.get("img_timeout") or 60)
+    except (TypeError, ValueError):
+        img_timeout = 60
+    img_timeout = max(10, min(600, img_timeout))
+
     return ApiConfig(
         api_key=str(payload.get("api_key") or "").strip(),
         base_url=str(payload.get("base_url") or DEFAULT_BASE_URL).strip(),
@@ -111,6 +131,8 @@ def load_api_config() -> ApiConfig:
         max_tokens=max(256, max_tokens),
         admin_unlocked=admin_unlocked,
         img_enabled=img_enabled,
+        img_backend=raw_backend,
+        img_timeout=img_timeout,
         img_api_key=str(payload.get("img_api_key") or "").strip(),
         img_base_url=str(
             payload.get("img_base_url") or DEFAULT_IMG_BASE_URL
@@ -156,19 +178,40 @@ def apply_api_config(
             use_mock=False,
         )
 
-    if config.img_enabled and config.img_api_key.strip():
+    # 生图方式以本机保存的选择为准：默认本地 SD，用户显式选在线 API 时才走 API。
+    chosen_backend = (config.img_backend or "diffusers").strip().lower()
+
+    local_backends = {"diffusers", "comfyui", "mock"}
+    if chosen_backend in local_backends:
+        updates.update(
+            img_enabled=bool(config.img_enabled),
+            img_backend=chosen_backend,
+            img_timeout=config.img_timeout,
+        )
+    elif config.img_enabled and config.img_api_key.strip():
+        base_url = config.img_base_url.strip() or DEFAULT_IMG_BASE_URL
+        api_backend = (
+            "ark"
+            if "ark.cn-beijing.volces.com" in base_url.lower()
+            else "seedream"
+        )
         updates.update(
             img_enabled=True,
-            img_backend="seedream",
+            img_backend=api_backend,
+            img_timeout=config.img_timeout,
             img_api_key=config.img_api_key.strip(),
-            img_base_url=config.img_base_url.strip(),
+            img_base_url=base_url,
             img_api_model=config.img_model.strip() or DEFAULT_IMG_MODEL,
             img_api_size=config.img_size.strip(),
             img_width=max(256, config.img_width or DEFAULT_IMG_WIDTH),
             img_height=max(256, config.img_height or DEFAULT_IMG_HEIGHT),
         )
-    elif not config.img_enabled:
-        updates["img_enabled"] = False
+    else:
+        # 选了在线 API 但没有 Key：关闭插图，避免静默切回本地或报错。
+        updates.update(
+            img_enabled=False,
+            img_timeout=config.img_timeout,
+        )
 
     if not updates:
         return settings
@@ -187,7 +230,11 @@ def load_app_settings() -> Settings:
             settings,
             llm_api_key=None,
             img_api_key=None,
-            img_backend="mock",
+            img_backend=(
+                settings.img_backend
+                if settings.img_backend_explicit
+                else "diffusers"
+            ),
             use_mock=True,
         )
     return apply_api_config(settings)

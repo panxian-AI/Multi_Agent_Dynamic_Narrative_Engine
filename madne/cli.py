@@ -13,12 +13,14 @@ from .config import Settings
 from .engine.context_store import ContextStore
 from .engine.orchestrator import Orchestrator
 from .engine.run_log import RunLogEntry
+from .hf_env import DEFAULT_HF_MIRROR
 from .image import (
     ImageRequest,
     build_negative_prompt,
     build_scene_prompt,
     create_image_client,
 )
+from .image.downloads import download_model, is_model_cached
 from .image.prompts import select_involved_npcs
 from .llm import create_llm_client
 from .models import (
@@ -35,6 +37,11 @@ app = typer.Typer(
     add_completion=False,
     help="MADNE - 多 Agent 动态叙事引擎 Demo",
 )
+models_app = typer.Typer(
+    add_completion=False,
+    help="本地 SD 模型管理：预下载、缓存状态",
+)
+app.add_typer(models_app, name="models")
 
 
 def _build_settings(
@@ -151,7 +158,7 @@ def run(
     img_backend: str | None = typer.Option(
         None,
         "--img-backend",
-        help="临时覆盖图像后端：mock / comfyui / diffusers",
+        help="临时覆盖图像后端：mock / ark / seedream / comfyui / diffusers",
     ),
     print_json: bool = typer.Option(False, "--print-json", help="打印完整 GameOutput JSON"),
 ) -> None:
@@ -220,7 +227,7 @@ def resume(
     img_backend: str | None = typer.Option(
         None,
         "--img-backend",
-        help="临时覆盖图像后端：mock / comfyui / diffusers",
+        help="临时覆盖图像后端：mock / ark / seedream / comfyui / diffusers",
     ),
 ) -> None:
     """从最近一次 ContextStore 断点继续执行。"""
@@ -247,7 +254,7 @@ def image(
     img_backend: str | None = typer.Option(
         None,
         "--img-backend",
-        help="临时覆盖图像后端：mock / comfyui / diffusers",
+        help="临时覆盖图像后端：mock / ark / seedream / comfyui / diffusers",
     ),
 ) -> None:
     """为会话最近一回合重新生成插图（不调用叙事 LLM）。"""
@@ -398,7 +405,7 @@ def health(
     img_backend: str | None = typer.Option(
         None,
         "--img-backend",
-        help="临时覆盖图像后端：mock / comfyui / diffusers",
+        help="临时覆盖图像后端：mock / ark / seedream / comfyui / diffusers",
     ),
 ) -> None:
     """检查 LLM / 图像后端 / 存储的配置状态。"""
@@ -413,6 +420,7 @@ def health(
         },
         "image": {
             "enabled": settings.img_enabled,
+            "timeout": settings.img_timeout,
             **client.health(),
         },
         "storage": {
@@ -430,6 +438,89 @@ def health(
         },
     }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@models_app.command("download")
+def models_download(
+    model: str | None = typer.Option(
+        None, "--model", help="Hugging Face 仓库名（默认 IMG_MODEL）"
+    ),
+    cache_dir: str | None = typer.Option(
+        None, "--cache-dir", help="权重缓存目录（默认 MODEL_CACHE_DIR）"
+    ),
+    mirror: bool = typer.Option(
+        False, "--mirror", help="强制使用 hf-mirror.com"
+    ),
+    endpoint: str | None = typer.Option(
+        None, "--endpoint", help="自定义 Hugging Face 端点 URL"
+    ),
+) -> None:
+    """预下载本地 SD 权重（只拉必要文件，支持断点续传与镜像回退）。"""
+    settings = Settings.from_env()
+    target_model = (model or settings.img_model).strip()
+    target_dir = Path(cache_dir) if cache_dir else settings.model_cache_dir
+    if mirror:
+        chosen = DEFAULT_HF_MIRROR
+    elif endpoint:
+        chosen = endpoint
+    else:
+        chosen = settings.hf_endpoint
+
+    typer.echo(f"模型：{target_model}")
+    typer.echo(f"目录：{Path(target_dir).resolve()}")
+    typer.echo(
+        "端点："
+        + (
+            chosen
+            if chosen
+            else "huggingface.co（网络失败自动回退 hf-mirror.com）"
+        )
+    )
+    try:
+        result = download_model(
+            target_model,
+            target_dir,
+            endpoint=chosen or None,
+            log=typer.echo,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI 统一友好输出
+        typer.echo(f"下载失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"完成：{result.summary()}")
+
+
+@models_app.command("status")
+def models_status(
+    model: str | None = typer.Option(
+        None, "--model", help="Hugging Face 仓库名（默认 IMG_MODEL）"
+    ),
+    cache_dir: str | None = typer.Option(
+        None, "--cache-dir", help="权重缓存目录（默认 MODEL_CACHE_DIR）"
+    ),
+) -> None:
+    """检查本地模型缓存（不联网）。"""
+    settings = Settings.from_env()
+    target_model = (model or settings.img_model).strip()
+    target_dir = Path(cache_dir) if cache_dir else settings.model_cache_dir
+    cached = is_model_cached(target_model, target_dir)
+    typer.echo(
+        json.dumps(
+            {
+                "model": target_model,
+                "cache_dir": str(Path(target_dir).resolve()),
+                "cached": cached,
+                "hf_endpoint": settings.hf_endpoint or "https://huggingface.co",
+                "note": (
+                    "已缓存，可直接生图。"
+                    if cached
+                    else "未缓存：运行 madne models download 预下载。"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -35,3 +35,7 @@ class EngineError(MADNEError):
 
 class ImageGenError(MADNEError):
     """图像生成后端不可用或生成失败。"""
+
+
+class ImageTimeoutError(ImageGenError):
+    """单张图片超过用户设定时限；上层应跳过本回合插图。"""

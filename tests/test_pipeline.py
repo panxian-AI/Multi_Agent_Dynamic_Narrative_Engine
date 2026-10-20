@@ -18,6 +18,7 @@ def make_settings(tmp_path: Path, compress_every: int = 2) -> Settings:
         data_dir=tmp_path,
         memory_compress_every=compress_every,
         review_max_rewrites=2,
+        img_backend="mock",
     )
 
 
@@ -251,6 +252,7 @@ def test_prefetch_can_be_disabled(tmp_path: Path):
         memory_compress_every=50,
         review_max_rewrites=2,
         prefetch_choices=False,
+        img_backend="mock",
     )
     orchestrator = Orchestrator(llm=llm, settings=settings)
     orchestrator.run_cycle(

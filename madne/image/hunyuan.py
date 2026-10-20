@@ -1,8 +1,9 @@
-"""Seedream / OpenAI 兼容图像生成后端。
+"""Seedream / 豆包 / OpenAI 兼容图像生成后端。
 
 默认按 ``POST {base_url}/images/generations`` 调用，支持返回 URL 或
-base64 图片。若部署方使用的是腾讯云签名接口（SecretId/SecretKey），
-请改用 ComfyUI / diffusers，或在业务侧提供 OpenAI 兼容网关。
+base64 图片。火山方舟（Ark）使用
+``https://ark.cn-beijing.volces.com/api/v3``，并额外发送
+``sequential_image_generation`` / ``stream`` / ``watermark`` 字段。
 """
 
 from __future__ import annotations
@@ -16,11 +17,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import ImageGenError
+from ..exceptions import ImageGenError, ImageTimeoutError
 from .base import ImageRequest, ImageResult
 
 DEFAULT_BASE_URL = ""
-DEFAULT_MODEL = "Seedream-Image-v5.0-lite"
+ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+ARK_MODEL = "doubao-seedream-4-0-250828"
+ARK_BACKENDS = frozenset({"ark", "doubao", "volcengine"})
+DEFAULT_MODEL = ARK_MODEL
 
 
 class _Retryable(Exception):
@@ -41,6 +45,9 @@ class OpenAICompatImageGenerator:
         max_retries: int = 2,
         size: str = "",
         backend_name: str = "seedream",
+        watermark: bool = True,
+        sequential_generation: str = "disabled",
+        stream: bool = False,
     ) -> None:
         self.api_key = (api_key or "").strip()
         self.base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
@@ -49,6 +56,20 @@ class OpenAICompatImageGenerator:
         self.max_retries = max(0, int(max_retries))
         self.size = (size or "").strip()
         self.backend_name = (backend_name or "seedream").strip()
+        self.watermark = bool(watermark)
+        self.sequential_generation = (
+            sequential_generation or "disabled"
+        ).strip()
+        self.stream = bool(stream)
+
+    # ------------------------------------------------------------------ 兼容判定
+    def _is_ark(self) -> bool:
+        """火山方舟 / 豆包 Seedream 需要额外的请求字段。"""
+        return (
+            self.backend_name.lower() in ARK_BACKENDS
+            or "ark.cn-beijing.volces.com" in self.base_url.lower()
+            or self.model.lower().startswith("doubao-seedream")
+        )
 
     # ------------------------------------------------------------------ 健康检查
     def health(self) -> dict[str, Any]:
@@ -117,16 +138,28 @@ class OpenAICompatImageGenerator:
         include_negative: bool = True,
         include_response_format: bool = True,
     ) -> ImageResult:
+        is_ark = self._is_ark()
         payload: dict[str, Any] = {
             "model": self.model,
             "prompt": request.prompt,
-            "n": 1,
-            "size": self.size or f"{request.width}x{request.height}",
+            "size": self.size
+            or ("2K" if is_ark else f"{request.width}x{request.height}"),
         }
-        if include_negative and request.negative_prompt.strip():
-            payload["negative_prompt"] = request.negative_prompt.strip()
-        if include_response_format:
-            payload["response_format"] = "url"
+        if is_ark:
+            # 对齐火山方舟 / 豆包 Seedream 的 REST 请求体。
+            payload["sequential_image_generation"] = (
+                self.sequential_generation
+            )
+            payload["stream"] = self.stream
+            payload["watermark"] = self.watermark
+            if include_response_format:
+                payload["response_format"] = "url"
+        else:
+            payload["n"] = 1
+            if include_negative and request.negative_prompt.strip():
+                payload["negative_prompt"] = request.negative_prompt.strip()
+            if include_response_format:
+                payload["response_format"] = "url"
 
         data = self._post_json(self._endpoint(), payload)
         image_bytes = self._extract_image(data)
@@ -193,7 +226,13 @@ class OpenAICompatImageGenerator:
             except OSError:
                 pass
             hint = ""
-            if (
+            if exc.code == 404 and self._is_ark():
+                hint = (
+                    "；请确认 Base URL 为 "
+                    "https://ark.cn-beijing.volces.com/api/v3，"
+                    "且模型中已开通 doubao-seedream"
+                )
+            elif (
                 exc.code == 404
                 and "seedream" in self.model.lower()
                 and "hunyuan.cloud.tencent.com" in url.lower()
@@ -215,6 +254,10 @@ class OpenAICompatImageGenerator:
                 f"{body[:500]}{hint}"
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+                raise ImageTimeoutError(
+                    f"生图 API 超时（>{self.timeout}s，{url}）"
+                ) from exc
             raise _Retryable(f"网络错误 [{url}]：{exc}") from exc
 
         if content_type.startswith("image/"):
@@ -289,6 +332,10 @@ class OpenAICompatImageGenerator:
                     return data
                 last_error = ImageGenError("下载结果图为空")
             except (urllib.error.URLError, OSError) as exc:
+                if "timed out" in str(exc).lower():
+                    raise ImageTimeoutError(
+                        "下载生图结果超时，本回合不生成插图"
+                    ) from exc
                 last_error = exc
             if attempt < 2:
                 time.sleep(1)

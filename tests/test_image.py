@@ -1,18 +1,22 @@
 import json
 import struct
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from madne.config import Settings
+from madne.engine.context_store import ContextStore
 from madne.engine.orchestrator import Orchestrator
-from madne.exceptions import ImageGenError
+from madne.exceptions import ImageGenError, ImageTimeoutError
 from madne.image import ImageRequest, build_scene_prompt, create_image_client
+from madne.image.base import ImageResult
 from madne.image.comfyui import ComfyUIImageGenerator
+from madne.image.diffusers import DiffusersImageGenerator
 from madne.image.factory import FallbackImageGenerator
-from madne.image.hunyuan import HunyuanImageGenerator
+from madne.image.hunyuan import HunyuanImageGenerator, OpenAICompatImageGenerator
 from madne.image.mock import render_placeholder_png
 from madne.llm import MockLLMClient
 from madne.models import NPCProfile, PlayerInput, SceneOutline
@@ -73,6 +77,108 @@ def test_scene_prompt_contains_character_appearance():
     assert "林默" in compact
 
 
+
+
+def test_default_backend_is_local_diffusers():
+    settings = Settings()
+
+    assert settings.img_backend == "diffusers"
+    assert settings.img_timeout == 60
+
+
+class _FakeDevice:
+    type = "cpu"
+
+
+class _FakeGenerator:
+    def __init__(self, device=None):  # noqa: ANN001
+        self.device = device
+
+    def manual_seed(self, seed):  # noqa: ANN001
+        return self
+
+
+class _FakeTorch:
+    Generator = _FakeGenerator
+
+
+class _SavedImage:
+    def save(self, path):  # noqa: ANN001
+        Path(path).write_bytes(b"fake-png")
+
+
+class _FakePipe:
+    def __init__(self, delay: float, steps: int = 3) -> None:
+        self.delay = delay
+        self.steps = steps
+
+    def __call__(self, **kwargs):  # noqa: ANN003
+        callback = kwargs.get("callback_on_step_end")
+        for step in range(self.steps):
+            time.sleep(self.delay)
+            if callback is not None:
+                callback(self, step, None, {})
+        return type("Output", (), {"images": [_SavedImage()]})()
+
+
+def test_diffusers_generation_finishes_within_timeout(
+    tmp_path: Path, monkeypatch
+):
+    generator = DiffusersImageGenerator(timeout=5)
+    monkeypatch.setattr(
+        generator,
+        "_pipeline_or_raise",
+        lambda *_args, **_kwargs: (
+            _FakePipe(0.01),
+            _FakeDevice(),
+            _FakeTorch(),
+        ),
+    )
+
+    progress: list[tuple[int, int]] = []
+    result = generator.generate(
+        ImageRequest(
+            prompt="雨夜侦探",
+            output_path=tmp_path / "sd.png",
+            width=64,
+            height=48,
+            seed=1,
+            steps=3,
+            on_progress=lambda current, total: progress.append(
+                (current, total)
+            ),
+        )
+    )
+
+    assert result.backend == "diffusers"
+    assert (tmp_path / "sd.png").exists()
+    assert progress == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_diffusers_aborts_after_timeout_budget(
+    tmp_path: Path, monkeypatch
+):
+    generator = DiffusersImageGenerator(timeout=1)
+    monkeypatch.setattr(
+        generator,
+        "_pipeline_or_raise",
+        lambda *_args, **_kwargs: (
+            _FakePipe(0.6),
+            _FakeDevice(),
+            _FakeTorch(),
+        ),
+    )
+
+    with pytest.raises(ImageTimeoutError, match="超时"):
+        generator.generate(
+            ImageRequest(
+                prompt="超时测试",
+                output_path=tmp_path / "timeout.png",
+                width=64,
+                height=48,
+                seed=1,
+            )
+        )
 
 
 def test_seedream_factory_uses_api_config():
@@ -137,6 +243,111 @@ def test_fallback_generator_degrades_when_primary_fails(tmp_path: Path):
     assert result.backend == "mock"
     assert target.exists()
     assert any("已自动降级 mock" in warning for warning in result.warnings)
+
+
+def test_fallback_generator_does_not_mock_on_timeout(tmp_path: Path):
+    class TimeoutClient:
+        backend_name = "slow"
+
+        def health(self):
+            return {"backend": "slow", "available": True}
+
+        def generate(self, request):  # noqa: ANN001
+            raise ImageTimeoutError("本地 SD 生成超时（>60s）")
+
+    client = FallbackImageGenerator(TimeoutClient())
+
+    with pytest.raises(ImageTimeoutError):
+        client.generate(
+            ImageRequest(
+                prompt="test",
+                output_path=tmp_path / "timeout.png",
+                width=64,
+                height=64,
+                seed=7,
+            )
+        )
+
+
+def test_orchestrator_skips_illustration_on_timeout(tmp_path: Path):
+    class TimeoutClient:
+        backend_name = "slow"
+
+        def health(self):
+            return {"backend": "slow", "available": True}
+
+        def generate(self, request):  # noqa: ANN001
+            raise ImageTimeoutError("本地 SD 生成超时（>60s）")
+
+    orchestrator = Orchestrator(
+        llm=MockLLMClient(),
+        settings=make_settings(tmp_path),
+    )
+    orchestrator.image_client = TimeoutClient()
+
+    output = orchestrator.run_cycle(
+        PlayerInput(text=CYBERPUNK_INPUT, session_id="timeout-img")
+    )
+
+    assert output.illustration is None
+    entries = orchestrator.database.load_run_log("timeout-img")
+    assert any(
+        entry["step_id"] == "05b_illustration"
+        and entry["status"] == "timeout"
+        for entry in entries
+    )
+    snapshot = orchestrator.database.load_latest_context("timeout-img")
+    warnings = ContextStore.from_snapshot(snapshot).warnings
+    assert any("本回合不生成插图" in warning for warning in warnings)
+
+
+def test_orchestrator_logs_illustration_progress(tmp_path: Path):
+    class ProgressClient:
+        backend_name = "fake"
+
+        def health(self):
+            return {"backend": "fake", "available": True}
+
+        def generate(self, request):  # noqa: ANN001
+            for current in range(1, 5):
+                assert request.on_progress is not None
+                request.on_progress(current, 4)
+            request.output_path.parent.mkdir(parents=True, exist_ok=True)
+            request.output_path.write_bytes(
+                render_placeholder_png(64, 48, request.seed)
+            )
+            return ImageResult(
+                path=request.output_path,
+                backend="fake",
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                seed=request.seed,
+                width=64,
+                height=48,
+                consistency_mode=request.consistency_mode,
+            )
+
+    orchestrator = Orchestrator(
+        llm=MockLLMClient(),
+        settings=make_settings(tmp_path),
+    )
+    orchestrator.image_client = ProgressClient()
+
+    output = orchestrator.run_cycle(
+        PlayerInput(text=CYBERPUNK_INPUT, session_id="progress-img")
+    )
+
+    assert output.illustration is not None
+    assert output.illustration.backend == "fake"
+    entries = orchestrator.database.load_run_log("progress-img")
+    progress = [
+        entry
+        for entry in entries
+        if entry["status"] == "running"
+        and "正在生成本回合插图" in (entry["detail"] or "")
+    ]
+    assert progress
+    assert any("100%" in (entry["detail"] or "") for entry in progress)
 
 
 def test_orchestrator_generates_illustration(tmp_path: Path):
@@ -336,6 +547,105 @@ def test_hunyuan_client_downloads_generated_image(tmp_path: Path):
         )
 
         assert result.backend == "hunyuan"
+        assert (result.width, result.height) == (128, 72)
+        assert target.read_bytes() == png
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_ark_factory_applies_volcengine_defaults():
+    client = create_image_client(
+        Settings(
+            use_mock=True,
+            img_backend="ark",
+            img_api_key="sk-image-test",
+        )
+    )
+
+    health = client.health()
+    assert health["backend"] == "ark"
+    assert health["available"] is True
+    assert "ark.cn-beijing.volces.com" in health["detail"]
+    assert "doubao-seedream-4-0-250828" in health["detail"]
+
+
+def _ark_handler(png: bytes):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # noqa: ANN002
+            return
+
+        def _send_json(self, payload: dict) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            assert self.path == "/api/v3/images/generations"
+            assert self.headers.get("Authorization") == "Bearer sk-image-test"
+            assert payload["model"] == "doubao-seedream-4-0-250828"
+            assert payload["size"] == "2K"
+            assert payload["response_format"] == "url"
+            assert payload["sequential_image_generation"] == "disabled"
+            assert payload["stream"] is False
+            assert payload["watermark"] is True
+            assert "n" not in payload
+            port = self.server.server_address[1]
+            self._send_json(
+                {
+                    "data": [
+                        {"url": f"http://127.0.0.1:{port}/ark.png"}
+                    ]
+                }
+            )
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/ark.png":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.end_headers()
+                self.wfile.write(png)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    return Handler
+
+
+def test_ark_client_sends_seedream_rest_fields(tmp_path: Path):
+    png = render_placeholder_png(128, 72, 13)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ark_handler(png))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = OpenAICompatImageGenerator(
+            api_key="sk-image-test",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}/api/v3",
+            model="doubao-seedream-4-0-250828",
+            size="2K",
+            timeout=10,
+            backend_name="ark",
+            watermark=True,
+        )
+        target = tmp_path / "ark.png"
+        result = client.generate(
+            ImageRequest(
+                prompt="黑洞中冲出的复古列车",
+                negative_prompt="模糊，水印",
+                output_path=target,
+                width=1280,
+                height=720,
+            )
+        )
+
+        assert result.backend == "ark"
         assert (result.width, result.height) == (128, 72)
         assert target.read_bytes() == png
     finally:

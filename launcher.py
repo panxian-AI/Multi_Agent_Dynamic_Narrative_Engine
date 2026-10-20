@@ -66,6 +66,7 @@ STATUS_LABELS = {
     "degraded": "降级",
     "skipped": "跳过",
     "running": "进行中",
+    "timeout": "超时",
 }
 
 
@@ -126,6 +127,15 @@ class ApiConfigDialog(tk.Toplevel):
         self._show_key_var = tk.BooleanVar(value=False)
 
         self._img_enabled_var = tk.BooleanVar(value=self._config.img_enabled)
+        self._img_backend_var = tk.StringVar(
+            value=(
+                "local"
+                if self._config.img_backend
+                in {"diffusers", "comfyui", "mock"}
+                else "api"
+            )
+        )
+        self._img_timeout_var = tk.IntVar(value=self._config.img_timeout)
         self._img_key_var = tk.StringVar(value=self._config.img_api_key)
         self._img_base_var = tk.StringVar(value=self._config.img_base_url)
         self._img_model_var = tk.StringVar(value=self._config.img_model)
@@ -140,13 +150,16 @@ class ApiConfigDialog(tk.Toplevel):
         self._img_model_var.trace_add(
             "write", lambda *_: self._update_img_hint()
         )
+        self._img_timeout_var.trace_add(
+            "write", lambda *_: self._update_img_hint()
+        )
 
         self._status_var = tk.StringVar(
             value="填写 API Key 后点击“测试连接”或“保存”；管理员可填写邀请码。"
         )
 
         self._build_ui()
-        self._update_img_hint()
+        self._on_backend_changed()
         self.after(100, self._poll_queue)
         self.after(50, self._center)
         self.after(80, self._bring_to_front)
@@ -232,7 +245,7 @@ class ApiConfigDialog(tk.Toplevel):
 
         img_box = ttk.LabelFrame(
             frame,
-            text="生图 API（Seedream / OpenAI 兼容，可选）",
+            text="场景插图（本地 SD 默认，在线 API 可选）",
             padding=10,
         )
         img_box.pack(fill="x", pady=(12, 0))
@@ -244,12 +257,54 @@ class ApiConfigDialog(tk.Toplevel):
             variable=self._img_enabled_var,
         ).grid(row=0, column=0, columnspan=2, sticky="w")
 
-        ttk.Label(img_box, text="生图 API Key").grid(
+        ttk.Label(img_box, text="生图方式").grid(
             row=1, column=0, sticky="w", pady=(8, 0)
+        )
+        backend_frame = ttk.Frame(img_box)
+        backend_frame.grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        self._img_local_radio = ttk.Radiobutton(
+            backend_frame,
+            text="本地 SD（推荐）",
+            variable=self._img_backend_var,
+            value="local",
+            command=self._on_backend_changed,
+        )
+        self._img_local_radio.pack(side="left")
+        self._img_api_radio = ttk.Radiobutton(
+            backend_frame,
+            text="在线 API（可选）",
+            variable=self._img_backend_var,
+            value="api",
+            command=self._on_backend_changed,
+        )
+        self._img_api_radio.pack(side="left", padx=(12, 0))
+
+        ttk.Label(img_box, text="单张时间上限").grid(
+            row=2, column=0, sticky="w", pady=(8, 0)
+        )
+        timeout_frame = ttk.Frame(img_box)
+        timeout_frame.grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        self._img_timeout_spin = ttk.Spinbox(
+            timeout_frame,
+            from_=10,
+            to=600,
+            increment=10,
+            textvariable=self._img_timeout_var,
+            width=8,
+        )
+        self._img_timeout_spin.pack(side="left")
+        ttk.Label(timeout_frame, text=" 秒（默认 60）").pack(side="left")
+
+        ttk.Label(img_box, text="生图 API Key").grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
         )
         img_key_frame = ttk.Frame(img_box)
         img_key_frame.grid(
-            row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+            row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
         img_key_frame.columnconfigure(0, weight=1)
         self._img_key_entry = ttk.Entry(
@@ -264,31 +319,31 @@ class ApiConfigDialog(tk.Toplevel):
         ).grid(row=0, column=1, padx=(6, 0))
 
         ttk.Label(img_box, text="Base URL").grid(
-            row=2, column=0, sticky="w", pady=(8, 0)
+            row=4, column=0, sticky="w", pady=(8, 0)
         )
         self._img_base_entry = ttk.Entry(
             img_box, textvariable=self._img_base_var
         )
         self._img_base_entry.grid(
-            row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+            row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
 
         ttk.Label(img_box, text="模型").grid(
-            row=3, column=0, sticky="w", pady=(8, 0)
+            row=5, column=0, sticky="w", pady=(8, 0)
         )
         self._img_model_entry = ttk.Entry(
             img_box, textvariable=self._img_model_var
         )
         self._img_model_entry.grid(
-            row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+            row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
 
         ttk.Label(img_box, text="分辨率").grid(
-            row=4, column=0, sticky="w", pady=(8, 0)
+            row=6, column=0, sticky="w", pady=(8, 0)
         )
         size_frame = ttk.Frame(img_box)
         size_frame.grid(
-            row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+            row=6, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
         )
         self._img_width_spin = ttk.Spinbox(
             size_frame,
@@ -311,13 +366,13 @@ class ApiConfigDialog(tk.Toplevel):
         self._img_height_spin.pack(side="left")
 
         ttk.Label(img_box, text="尺寸档位（可选）").grid(
-            row=5, column=0, sticky="w", pady=(8, 0)
+            row=7, column=0, sticky="w", pady=(8, 0)
         )
         self._img_size_entry = ttk.Entry(
             img_box, textvariable=self._img_size_var
         )
         self._img_size_entry.grid(
-            row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+            row=7, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
 
         ttk.Label(
@@ -325,15 +380,15 @@ class ApiConfigDialog(tk.Toplevel):
             textvariable=self._img_hint_var,
             style="Hint.TLabel",
             wraplength=620,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         self._test_img_btn = ttk.Button(
             img_box,
-            text="测试生图（消耗一次调用）",
+            text="测试生图",
             command=self._test_image_connection,
         )
         self._test_img_btn.grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(8, 0)
+            row=9, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
 
         buttons = ttk.Frame(frame)
@@ -383,6 +438,30 @@ class ApiConfigDialog(tk.Toplevel):
             show="" if self._show_img_key_var.get() else "•"
         )
 
+    def _on_backend_changed(self) -> None:
+        local = self._img_backend_var.get() == "local"
+        state = "disabled" if local else "normal"
+        for widget in (
+            self._img_key_entry,
+            self._img_base_entry,
+            self._img_model_entry,
+            self._img_size_entry,
+            self._img_width_spin,
+            self._img_height_spin,
+        ):
+            try:
+                widget.configure(state=state)
+            except tk.TclError:
+                pass
+        self._test_img_btn.configure(
+            text=(
+                "测试本地 SD（首次可能下载模型）"
+                if local
+                else "测试在线 API（消耗一次调用）"
+            )
+        )
+        self._update_img_hint()
+
     def _preview_endpoint(self) -> str:
         try:
             generator = OpenAICompatImageGenerator(
@@ -399,72 +478,120 @@ class ApiConfigDialog(tk.Toplevel):
             return self._img_base_var.get().strip()
 
     def _update_img_hint(self) -> None:
+        try:
+            timeout = max(10, int(self._img_timeout_var.get()))
+        except (tk.TclError, TypeError, ValueError):
+            timeout = 60
+        if self._img_backend_var.get() == "local":
+            model = os.getenv("IMG_MODEL", "stabilityai/sd-turbo")
+            self._img_hint_var.set(
+                f"当前：本地 SD，单张上限 {timeout} 秒。\n"
+                f"模型：{model}（源码运行可在 .env 用 IMG_MODEL 修改）\n"
+                "分辨率/步数由 IMG_WIDTH / IMG_HEIGHT / IMG_STEPS 控制。\n"
+                "首次生图会自动下载权重（约 2.4GB）；官方站点失败会自动切到 "
+                "hf-mirror.com，下载支持断点续传、进度写入运行日志。\n"
+                "超时或失败时本回合不生成插图，文本剧情继续。"
+            )
+            return
+
         endpoint = self._preview_endpoint()
         endpoint_text = endpoint or "（请先填写 Base URL）"
         self._img_hint_var.set(
+            f"当前：在线 API，单张上限 {timeout} 秒。\n"
             f"实际请求：{endpoint_text}\n"
-            "Base URL 必须是服务商提供的 OpenAI 兼容地址；"
-            "混元默认地址不提供 Seedream 图像接口（会返回 404）。\n"
-            "Seedream 尺寸可填 2K / 4K；留空则使用上面的宽×高。"
-            "未填生图 Key 时使用 Mock 占位图。"
+            "方舟 API：https://ark.cn-beijing.volces.com/api/v3，"
+            "模型 doubao-seedream-4-0-250828。\n"
+            "尺寸可填 2K / 4K；留空则使用上面的宽×高。"
         )
 
     def _test_image_connection(self) -> None:
         config = self._read_config()
         if config is None:
             return
-        if not config.img_api_key.strip():
-            messagebox.showwarning(
-                "缺少生图 Key", "请先填写生图 API Key。", parent=self
-            )
-            return
-        if not config.img_base_url.strip():
-            messagebox.showwarning(
-                "缺少 Base URL",
-                "请填写服务商控制台提供的 OpenAI 兼容 Base URL，"
-                "例如火山方舟的 https://ark.cn-beijing.volces.com/api/v3。",
-                parent=self,
-            )
-            return
 
-        endpoint = self._preview_endpoint()
-        if (
-            "seedream" in config.img_model.lower()
-            and "hunyuan.cloud.tencent.com" in endpoint.lower()
-        ):
-            messagebox.showwarning(
-                "Base URL 可能不正确",
-                f"当前会请求：\n{endpoint}\n\n"
-                "混元默认地址不提供 Seedream 图像接口，通常会返回 404。\n"
-                "请填写腾讯云/服务商控制台提供的 OpenAI 兼容 Base URL。",
-                parent=self,
+        local = config.img_backend in {"diffusers", "comfyui", "mock"}
+        if local:
+            settings = replace(
+                Settings.from_env(),
+                img_enabled=True,
+                img_backend=config.img_backend,
+                img_timeout=config.img_timeout,
             )
+            target = config_dir() / f"test_image_{config.img_backend}.png"
+            if not messagebox.askyesno(
+                "测试本地 SD",
+                f"将使用本地模型：\n{settings.img_model}\n\n"
+                f"尺寸 {settings.img_width}×{settings.img_height}，"
+                f"{settings.img_steps} 步，上限 {config.img_timeout} 秒。\n"
+                "首次运行可能需要下载模型。确定继续吗？",
+                parent=self,
+            ):
+                return
+        else:
+            if not config.img_api_key.strip():
+                messagebox.showwarning(
+                    "缺少生图 Key",
+                    "选择在线 API 时请先填写生图 API Key，"
+                    "或切换为本地 SD。",
+                    parent=self,
+                )
+                return
+            if not config.img_base_url.strip():
+                messagebox.showwarning(
+                    "缺少 Base URL",
+                    "请填写服务商控制台提供的 OpenAI 兼容 Base URL，"
+                    "例如火山方舟的 https://ark.cn-beijing.volces.com/api/v3。",
+                    parent=self,
+                )
+                return
 
-        if not messagebox.askyesno(
-            "测试生图",
-            f"将请求：\n{endpoint}\n\n这会消耗一次生图调用，确定继续吗？",
-            parent=self,
-        ):
-            return
+            endpoint = self._preview_endpoint()
+            if (
+                "seedream" in config.img_model.lower()
+                and "hunyuan.cloud.tencent.com" in endpoint.lower()
+            ):
+                messagebox.showwarning(
+                    "Base URL 可能不正确",
+                    f"当前会请求：\n{endpoint}\n\n"
+                    "混元默认地址不提供 Seedream 图像接口，通常会返回 404。\n"
+                    "请填写腾讯云/服务商控制台提供的 OpenAI 兼容 Base URL。",
+                    parent=self,
+                )
+
+            if not messagebox.askyesno(
+                "测试在线 API",
+                f"将请求：\n{endpoint}\n\n"
+                f"上限 {config.img_timeout} 秒，这会消耗一次生图调用，确定继续吗？",
+                parent=self,
+            ):
+                return
+
+            settings = replace(
+                Settings.from_env(),
+                img_enabled=True,
+                img_backend=config.img_backend,
+                img_timeout=config.img_timeout,
+                img_api_key=config.img_api_key,
+                img_base_url=config.img_base_url,
+                img_api_model=config.img_model,
+                img_api_size=config.img_size,
+                img_width=config.img_width,
+                img_height=config.img_height,
+            )
+            target = config_dir() / "test_image_api.png"
 
         self._set_busy(True)
         self._status_var.set("正在测试生图…")
 
+        def progress(current: int, total: int) -> None:
+            if total > 0:
+                self._queue.put(
+                    ("status", f"本地 SD 采样 {current}/{total}…")
+                )
+
         def worker() -> None:
             try:
-                settings = replace(
-                    Settings.from_env(),
-                    img_enabled=True,
-                    img_backend="seedream",
-                    img_api_key=config.img_api_key,
-                    img_base_url=config.img_base_url,
-                    img_api_model=config.img_model,
-                    img_api_size=config.img_size,
-                    img_width=config.img_width,
-                    img_height=config.img_height,
-                )
                 client = create_image_client(settings)
-                target = config_dir() / "test_image.png"
                 result = client.generate(
                     ImageRequest(
                         prompt=(
@@ -472,9 +599,12 @@ class ApiConfigDialog(tk.Toplevel):
                             "柔和的午后侧光，写实摄影，高清细节，不含文字"
                         ),
                         output_path=target,
-                        width=config.img_width,
-                        height=config.img_height,
+                        width=settings.img_width,
+                        height=settings.img_height,
                         seed=1,
+                        steps=settings.img_steps,
+                        guidance_scale=settings.img_guidance,
+                        on_progress=progress if local else None,
                     )
                 )
                 if result.backend == "mock":
@@ -527,6 +657,22 @@ class ApiConfigDialog(tk.Toplevel):
             img_height = max(256, int(self._img_height_var.get()))
         except (tk.TclError, TypeError, ValueError):
             img_height = DEFAULT_IMG_HEIGHT
+        try:
+            img_timeout = max(10, min(600, int(self._img_timeout_var.get())))
+        except (tk.TclError, TypeError, ValueError):
+            img_timeout = 60
+
+        img_base_url = (
+            self._img_base_var.get().strip() or DEFAULT_IMG_BASE_URL
+        )
+        if self._img_backend_var.get() == "local":
+            img_backend = "diffusers"
+        else:
+            img_backend = (
+                "ark"
+                if "ark.cn-beijing.volces.com" in img_base_url.lower()
+                else "seedream"
+            )
 
         admin_unlocked = self._config.admin_unlocked
         invite_code = self._admin_code_var.get().strip()
@@ -547,10 +693,10 @@ class ApiConfigDialog(tk.Toplevel):
             max_tokens=max_tokens,
             admin_unlocked=admin_unlocked,
             img_enabled=bool(self._img_enabled_var.get()),
+            img_backend=img_backend,
+            img_timeout=img_timeout,
             img_api_key=self._img_key_var.get().strip(),
-            img_base_url=(
-                self._img_base_var.get().strip() or DEFAULT_IMG_BASE_URL
-            ),
+            img_base_url=img_base_url,
             img_model=(
                 self._img_model_var.get().strip() or DEFAULT_IMG_MODEL
             ),
@@ -573,12 +719,16 @@ class ApiConfigDialog(tk.Toplevel):
             self._img_size_entry,
             self._img_width_spin,
             self._img_height_spin,
-            self._img_size_entry,
+            self._img_timeout_spin,
+            self._img_local_radio,
+            self._img_api_radio,
             self._test_btn,
             self._test_img_btn,
             self._save_btn,
         ):
             widget.configure(state=state)
+        if not busy:
+            self._on_backend_changed()
 
     def _test_connection(self) -> None:
         config = self._read_config()
@@ -630,6 +780,18 @@ class ApiConfigDialog(tk.Toplevel):
         config = self._read_config(check_admin=True)
         if config is None:
             return
+        if (
+            config.img_enabled
+            and config.img_backend not in {"diffusers", "comfyui", "mock"}
+            and not config.img_api_key.strip()
+        ):
+            messagebox.showwarning(
+                "缺少生图 Key",
+                "当前选择“在线 API”，请填写生图 API Key；\n"
+                "或切换为“本地 SD（推荐）”。",
+                parent=self,
+            )
+            return
         path = save_api_config(config)
         if self._on_saved is not None:
             self._on_saved()
@@ -654,6 +816,15 @@ class ApiConfigDialog(tk.Toplevel):
         self._key_var.set("")
         self._admin_code_var.set("")
         self._img_enabled_var.set(self._config.img_enabled)
+        self._img_backend_var.set(
+            (
+                "local"
+                if self._config.img_backend
+                in {"diffusers", "comfyui", "mock"}
+                else "api"
+            )
+        )
+        self._img_timeout_var.set(self._config.img_timeout)
         self._img_key_var.set("")
         self._img_base_var.set(self._config.img_base_url)
         self._img_size_var.set(self._config.img_size)
@@ -728,6 +899,7 @@ class MadneApp(tk.Tk):
         self._session = ""
         self._turn = 0
         self._last_output: GameOutput | None = None
+        self._image_timeout_notice: str | None = None
 
         self._api_config = load_api_config()
         self._api_dialog: ApiConfigDialog | None = None
@@ -1223,6 +1395,9 @@ class MadneApp(tk.Tk):
 
         self._set_text(self._player_story_text, "\n".join(lines))
         self._player_status_var.set("请选择你的行动")
+        if self._image_timeout_notice:
+            self._player_status_var.set(self._image_timeout_notice)
+            self._image_timeout_notice = None
         self._show_player_story()
         self._render_player_illustration(output)
         self._render_player_choices(output)
@@ -1294,6 +1469,7 @@ class MadneApp(tk.Tk):
         self._session = session
         self._turn = 1
         self._last_output = None
+        self._image_timeout_notice = None
         self._clear_result()
         self._clear_player_result()
         self._player_setup_visible = False
@@ -1384,6 +1560,7 @@ class MadneApp(tk.Tk):
         return replace(
             base,
             data_dir=DATA_DIR,
+            model_cache_dir=BASE_DIR / "models",
             memory_compress_every=_read_spin(self._compress_var, 2, 1),
             review_max_rewrites=_read_spin(self._rewrites_var, 2, 0),
             prefetch_choices=bool(self._prefetch_var.get()),
@@ -1391,11 +1568,18 @@ class MadneApp(tk.Tk):
 
     def _refresh_api_status(self) -> None:
         config = load_api_config()
-        img_status = (
-            "Seedream 生图已配置"
-            if config.img_configured
-            else ("生图：Mock 占位图" if config.img_enabled else "生图：已关闭")
-        )
+        local = config.img_backend in {"diffusers", "comfyui", "mock"}
+        if not config.img_enabled:
+            img_status = "生图：已关闭"
+        elif local:
+            img_status = (
+                f"生图：本地 {config.img_backend}"
+                f"（≤{config.img_timeout}s）"
+            )
+        elif config.img_configured:
+            img_status = f"生图：在线 API（≤{config.img_timeout}s）"
+        else:
+            img_status = "生图：在线 API 未配置"
         if config.configured:
             self._api_status_var.set(
                 f"API：已配置 {config.model}（本机配置）；{img_status}"
@@ -1489,6 +1673,7 @@ class MadneApp(tk.Tk):
             return
         choice = f"{branch.branch_id}. {branch.description}"
         self._turn += 1
+        self._image_timeout_notice = None
         orchestrator = self._orchestrator
         session = self._session
         self._status_var.set(f"第 {self._turn} 回合生成中…")
@@ -1536,8 +1721,22 @@ class MadneApp(tk.Tk):
                             entry.detail or f"正在执行 {entry.step_id}…"
                         )
                         if self._ui_mode == "player":
-                            self._player_status_var.set("故事生成中…")
+                            self._player_status_var.set(
+                                entry.detail or "故事生成中…"
+                            )
+                    elif entry.status == "timeout":
+                        self._image_timeout_notice = (
+                            entry.detail
+                            or "插图生成超时，本回合不生成插图"
+                        )
+                        self._status_var.set(self._image_timeout_notice)
+                        if self._ui_mode == "player":
+                            self._player_status_var.set(
+                                self._image_timeout_notice
+                            )
                     self._append_log(entry)
+                elif kind == "status":
+                    self._status_var.set(str(payload))
                 elif kind == "output":
                     self._last_output = payload  # type: ignore[assignment]
                     self._render_output(self._last_output)
@@ -1750,6 +1949,7 @@ class MadneApp(tk.Tk):
         self._session = ""
         self._turn = 0
         self._last_output = None
+        self._image_timeout_notice = None
         self._clear_result()
         self._clear_player_result()
         self._player_setup_visible = True

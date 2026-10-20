@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import ImageGenError
+from ..exceptions import ImageGenError, ImageTimeoutError
 from .base import ImageRequest, ImageResult
 
 DEFAULT_WORKFLOW: dict[str, Any] = {
@@ -246,7 +246,7 @@ class ComfyUIImageGenerator:
                         "ComfyUI 任务已完成，但工作流没有输出图片（请检查 SaveImage 节点）"
                     )
             time.sleep(1.0)
-        raise ImageGenError(f"ComfyUI 生成超时（>{self.timeout}s）")
+        raise ImageTimeoutError(f"ComfyUI 生成超时（>{self.timeout}s）")
 
     def _download(self, image_info: dict[str, Any]) -> bytes:
         query = urllib.parse.urlencode(
