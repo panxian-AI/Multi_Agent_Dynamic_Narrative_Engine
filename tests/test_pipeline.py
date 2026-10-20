@@ -6,6 +6,7 @@ from madne.engine.context_store import ContextStore
 from madne.engine.orchestrator import Orchestrator
 from madne.llm import MockLLMClient
 from madne.models import ChoiceCache, GameOutput, PlayerInput, StoryFramework
+from madne.storage import SessionDatabase
 
 
 CYBERPUNK_INPUT = "我想要一个赛博朋克世界里，关于记忆买卖的侦探故事"
@@ -20,13 +21,12 @@ def make_settings(tmp_path: Path, compress_every: int = 2) -> Settings:
     )
 
 
+def database_for(tmp_path: Path) -> SessionDatabase:
+    return SessionDatabase(tmp_path / "madne.db")
+
+
 def read_runlog(tmp_path: Path, session: str) -> list[dict]:
-    path = tmp_path / "sessions" / session / "runlog.jsonl"
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    return database_for(tmp_path).load_run_log(session)
 
 
 def test_mock_pipeline_single_cycle(tmp_path: Path):
@@ -116,12 +116,11 @@ def test_multi_turn_continuation_and_memory_injection(tmp_path: Path):
         "B1c",
     ]
 
-    compressed_path = (
-        tmp_path / "sessions" / "multi" / "memory" / "compressed.json"
+    compressed_payload = database_for(tmp_path).load_compressed_memory("multi")
+    assert compressed_payload is not None
+    assert any(
+        "盟友" in item for item in compressed_payload["player_preferences"]
     )
-    assert compressed_path.exists()
-    compressed = json.loads(compressed_path.read_text(encoding="utf-8"))
-    assert any("盟友" in item for item in compressed["player_preferences"])
 
     planner_calls = llm.calls_for("planner")
     assert len(planner_calls) == 3
@@ -130,11 +129,7 @@ def test_multi_turn_continuation_and_memory_injection(tmp_path: Path):
     entries = read_runlog(tmp_path, "multi")
     assert any(entry["agent"] == "npc_update" for entry in entries)
 
-    npc_payload = json.loads(
-        (tmp_path / "sessions" / "multi" / "npcs.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    npc_payload = database_for(tmp_path).load_npcs("multi")
     kai = next(item for item in npc_payload if item["npc_id"] == "npc_kai")
     assert kai["traits"]["loyalty"] > 85
 
@@ -173,13 +168,8 @@ def test_third_turn_framework_reflects_compressed_memory(tmp_path: Path):
         "B1b",
         "B1c",
     ]
-    context = ContextStore.load(
-        tmp_path
-        / "sessions"
-        / "memory-loop"
-        / "cycles"
-        / "cycle_003"
-        / "context.json"
+    context = ContextStore.from_snapshot(
+        database_for(tmp_path).load_latest_context("memory-loop")
     )
     framework = context.get("framework")
     assert isinstance(framework, StoryFramework)
@@ -457,16 +447,13 @@ def test_resume_from_partial_context(tmp_path: Path):
     )
 
     cycle_dir = tmp_path / "sessions" / session / "cycles" / "cycle_001"
-    context_path = cycle_dir / "context.json"
-    payload = json.loads(context_path.read_text(encoding="utf-8"))
+    database = database_for(tmp_path)
+    snapshot = database.load_latest_context(session)
     # 模拟在 World / Framework 完成后、NPC 初始化之前中断。
-    payload["completed_steps"] = ["01_world", "02_framework"]
+    snapshot["completed_steps"] = ["01_world", "02_framework"]
     for key in ("npcs", "scene", "script", "game_output"):
-        payload["data"].pop(key, None)
-    context_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+        snapshot["data"].pop(key, None)
+    database.save_context(snapshot)
     output_path = cycle_dir / "output.json"
     output_path.unlink(missing_ok=True)
 

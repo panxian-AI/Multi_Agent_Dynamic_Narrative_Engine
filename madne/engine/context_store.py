@@ -120,15 +120,19 @@ class ContextStore:
             payload = json.loads(source.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise EngineError(f"上下文文件格式错误: {source}") from exc
+        return cls.from_snapshot(payload)
 
+    @classmethod
+    def from_snapshot(cls, payload: dict[str, Any]) -> "ContextStore":
+        """从数据库/JSON 快照还原上下文（保留 Pydantic 模型类型）。"""
         data = {
             key: decode_value(value)
-            for key, value in payload.get("data", {}).items()
+            for key, value in (payload.get("data") or {}).items()
         }
         return cls(
-            session_id=payload.get("session_id", ""),
+            session_id=str(payload.get("session_id", "")),
             cycle=int(payload.get("cycle", 0)),
             data=data,
-            completed_steps=payload.get("completed_steps", []),
-            warnings=payload.get("warnings", []),
+            completed_steps=list(payload.get("completed_steps") or []),
+            warnings=list(payload.get("warnings") or []),
         )

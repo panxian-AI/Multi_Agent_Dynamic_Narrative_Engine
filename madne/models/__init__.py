@@ -14,7 +14,7 @@ from .input import PlayerInput
 from .memory import CompressedMemory, MemoryEvent
 from .npc import CastRoster, NPCProfile
 from .output import GameOutput
-from .plan import PlannerDecision, TaskPlan, TaskStep
+from .plan import PlannedStep, PlannerDecision, TaskPlan, TaskStep
 from .review import Issue, ReviewReport
 from .scene import SceneOutline
 from .script import DialogueLine, DialogueScript
@@ -26,6 +26,7 @@ __all__ = [
     "CreationBrief",
     "TaskStep",
     "TaskPlan",
+    "PlannedStep",
     "PlannerDecision",
     "WorldBible",
     "Beat",
@@ -57,6 +58,7 @@ MODEL_REGISTRY: dict[str, type[BaseModel]] = {
         CreationBrief,
         TaskStep,
         TaskPlan,
+        PlannedStep,
         PlannerDecision,
         WorldBible,
         Beat,

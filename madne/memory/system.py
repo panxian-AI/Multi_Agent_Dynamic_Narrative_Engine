@@ -1,16 +1,19 @@
-"""M10 记忆系统：完整事件流（JSONL）+ 压缩记忆（JSON）。"""
+"""M10 记忆系统：完整事件流 + 压缩记忆（SQLite 优先，文件模式兼容）。"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from pydantic import ValidationError
 
 from ..agents.prompts import MEMORY_COMPRESSION_SYSTEM
 from ..llm.base import LLMClient, extract_json
 from ..models import CompressedMemory, MemoryEvent
+
+if TYPE_CHECKING:
+    from ..storage import SessionDatabase
 
 
 class MemorySystem:
@@ -22,13 +25,17 @@ class MemorySystem:
         llm: LLMClient,
         compress_every: int = 10,
         session_id: str = "",
+        *,
+        database: "SessionDatabase | None" = None,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.llm = llm
         self.compress_every = max(1, compress_every)
         self.session_id = session_id
+        self.database = database
         self.memory_dir = self.session_dir / "memory"
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        if database is None:
+            self.memory_dir.mkdir(parents=True, exist_ok=True)
 
         self.full_path = self.memory_dir / "full.jsonl"
         self.compressed_path = self.memory_dir / "compressed.json"
@@ -36,13 +43,27 @@ class MemorySystem:
         self.last_error: str | None = None
 
     def record(self, event: MemoryEvent) -> None:
+        if self.database is not None and self.session_id:
+            self.database.append_memory_event(event.model_dump(mode="json"))
+            return
         with self.full_path.open("a", encoding="utf-8") as handle:
             handle.write(event.model_dump_json() + "\n")
 
     def read_events(self, limit: int | None = None) -> list[MemoryEvent]:
+        if self.database is not None and self.session_id:
+            payloads = self.database.load_memory_events(
+                self.session_id, limit=limit
+            )
+            events: list[MemoryEvent] = []
+            for payload in payloads:
+                try:
+                    events.append(MemoryEvent.model_validate(payload))
+                except ValidationError:
+                    continue
+            return events
         if not self.full_path.exists():
             return []
-        events: list[MemoryEvent] = []
+        events = []
         for line in self.full_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -55,9 +76,19 @@ class MemorySystem:
         return events
 
     def event_count(self) -> int:
+        if self.database is not None and self.session_id:
+            return self.database.memory_event_count(self.session_id)
         return len(self.read_events())
 
     def load_compressed(self) -> CompressedMemory | None:
+        if self.database is not None and self.session_id:
+            payload = self.database.load_compressed_memory(self.session_id)
+            if payload is None:
+                return None
+            try:
+                return CompressedMemory.model_validate(payload)
+            except ValidationError:
+                return None
         if not self.compressed_path.exists():
             return None
         try:
@@ -68,6 +99,11 @@ class MemorySystem:
             return None
 
     def save_compressed(self, memory: CompressedMemory) -> None:
+        if self.database is not None and self.session_id:
+            self.database.save_compressed_memory(
+                self.session_id, memory.model_dump(mode="json")
+            )
+            return
         self.compressed_path.write_text(
             memory.model_dump_json(indent=2),
             encoding="utf-8",
@@ -143,6 +179,8 @@ class MemorySystem:
         return merged
 
     def _load_meta(self) -> dict:
+        if self.database is not None and self.session_id:
+            return self.database.get_memory_meta(self.session_id)
         if not self.meta_path.exists():
             return {}
         try:
@@ -151,6 +189,9 @@ class MemorySystem:
             return {}
 
     def _save_meta(self, meta: dict) -> None:
+        if self.database is not None and self.session_id:
+            self.database.set_memory_meta(self.session_id, meta)
+            return
         self.meta_path.write_text(
             json.dumps(meta, ensure_ascii=False, indent=2),
             encoding="utf-8",

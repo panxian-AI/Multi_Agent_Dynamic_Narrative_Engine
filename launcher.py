@@ -27,6 +27,7 @@ from madne.image import ImageRequest, create_image_client
 from madne.image.hunyuan import OpenAICompatImageGenerator
 from madne.llm import MockLLMClient, OpenAICompatClient, create_llm_client
 from madne.models import Branch, GameOutput, PlayerInput
+from madne.storage import SessionDatabase
 from madne.user_config import (
     ApiConfig,
     DEFAULT_BASE_URL,
@@ -72,11 +73,16 @@ def _new_session_id() -> str:
     return f"desktop-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
+def _database() -> SessionDatabase:
+    return SessionDatabase(DATA_DIR / "madne.db")
+
+
 def _unique_session_id() -> str:
     base = _new_session_id()
     candidate = base
     index = 1
-    while (DATA_DIR / "sessions" / candidate).exists():
+    database = _database()
+    while database.session_exists(candidate):
         index += 1
         candidate = f"{base}-{index}"
     return candidate
@@ -792,7 +798,7 @@ class MadneApp(tk.Tk):
         ttk.Label(header, text=APP_TITLE, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="一句话生成结构化叙事；点击分支持续推进。RunLog、记忆与 JSON 自动落盘。",
+            text="一句话生成结构化叙事；点击分支持续推进。RunLog、记忆与输出自动写入数据库。",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
@@ -1268,7 +1274,7 @@ class MadneApp(tk.Tk):
 
         session = self._session_var.get().strip() or _unique_session_id()
         session_dir = DATA_DIR / "sessions" / session
-        if session_dir.exists():
+        if _database().session_exists(session) or session_dir.exists():
             if messagebox.askyesno(
                 "会话已存在",
                 f"会话 {session} 已有运行记录。\n是否从断点恢复？\n\n"

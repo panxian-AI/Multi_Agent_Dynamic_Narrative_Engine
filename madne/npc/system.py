@@ -1,9 +1,10 @@
-"""M9 NPC 系统：档案持久化 + 规则驱动的 traits 演变。"""
+"""M9 NPC 系统：档案持久化（SQLite 优先）+ 规则驱动的 traits 演变。"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..models import (
     CompressedMemory,
@@ -11,6 +12,9 @@ from ..models import (
     NPCProfile,
     WorldBible,
 )
+
+if TYPE_CHECKING:
+    from ..storage import SessionDatabase
 
 PLAYER_NPC_ID = "npc_linmo"
 
@@ -79,14 +83,32 @@ DEFAULT_ROSTER: tuple[NPCProfile, ...] = (
 
 
 class NPCSystem:
-    """主要角色池持久化；规则优先，LLM 辅助留作扩展点。"""
+    """主要角色池持久化；优先写数据库，未注入数据库时退回 JSON 文件。"""
 
-    def __init__(self, storage_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        storage_path: str | Path | None = None,
+        *,
+        database: "SessionDatabase | None" = None,
+        session_id: str = "",
+    ) -> None:
         self.storage_path = Path(storage_path) if storage_path is not None else None
+        self.database = database
+        self.session_id = session_id
         self._profiles: dict[str, NPCProfile] = {}
         self.last_changes: list[str] = []
 
     def load(self) -> "NPCSystem":
+        if self.database is not None and self.session_id:
+            try:
+                profiles = [
+                    NPCProfile.model_validate(item)
+                    for item in self.database.load_npcs(self.session_id)
+                ]
+            except (ValueError, TypeError):
+                return self
+            self._profiles = {profile.npc_id: profile for profile in profiles}
+            return self
         if self.storage_path is None or not self.storage_path.exists():
             return self
         try:
@@ -98,10 +120,22 @@ class NPCSystem:
         return self
 
     def save(self) -> None:
+        if self.database is not None and self.session_id:
+            self.database.save_npcs(
+                self.session_id,
+                [
+                    profile.model_dump(mode="json")
+                    for profile in self._profiles.values()
+                ],
+            )
+            return
         if self.storage_path is None:
             return
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [profile.model_dump(mode="json") for profile in self._profiles.values()]
+        payload = [
+            profile.model_dump(mode="json")
+            for profile in self._profiles.values()
+        ]
         self.storage_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",

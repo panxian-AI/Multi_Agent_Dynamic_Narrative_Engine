@@ -160,7 +160,7 @@ IMG_API_SIZE=
 - `IMG_CONSISTENCY_MODE=self_attn`：固定 session seed + 稳定角色外观提示；
 - `IMG_CONSISTENCY_MODE=id_injection`：在 NPC 档案中设置 `reference_image`
   （相对数据目录或绝对路径）后，用参考图注入身份。桌面 / CLI 会话的档案位于
-  `<data_dir>/sessions/<session>/npcs.json`，例如：
+  SQLite 的 `npcs` 表（`<data_dir>/madne.db`），例如：
   `"reference_image": "characters/npc_linmo.png"`；
 - `IMG_METRICS=1` 时本地计算 CLIP-I / DINO（需 `open_clip` / DINOv2），
   结果写入 `illustration.metrics`，用于验收 CLIP-I ≥ 0.75、DINO ≥ 0.65。
@@ -226,7 +226,8 @@ python -m madne run --mock -i "..." --no-illustrate
 - “预取两层选项”默认开启；“预取选项”页可查看当前每个分支未来两层的行动选项。
 - “运行日志”显示每个步骤的成功 / 审查驳回 / 重试 / 降级 / 预取状态；
   “完整 JSON”页可直接查看游戏引擎数据，选项后保留风险等级提示。
-- 所有记忆、RunLog、NPC 与 JSON 默认写入 `dist\runtime\sessions\<session>\`。
+- 所有记忆、RunLog、NPC、选项缓存与输出默认写入 `dist\runtime\madne.db`；
+  插图与导出的 `output.json` 仍保存在 `dist\runtime\sessions\<session>\`。
 
 ### 分发给测试者
 
@@ -290,11 +291,13 @@ madne/
 │   ├── filler.py / script.py / guardian.py
 │   └── __init__.py
 ├── engine/                   # M3 规则驱动工作流引擎
-│   ├── templates.py          # cold_start / continuation 静态模板
-│   ├── context_store.py      # 共享上下文 + 断点持久化
-│   ├── choice_cache.py       # 两层选项缓存持久化
-│   ├── run_log.py            # JSONL 运行日志
+│   ├── templates.py          # Agent 能力注册表 + 动态计划编译器
+│   ├── plan_runtime.py       # 运行期依赖修复 / 步骤注入
+│   ├── context_store.py      # 共享上下文快照
+│   ├── choice_cache.py       # 两层选项缓存
+│   ├── run_log.py            # 结构化运行日志
 │   └── orchestrator.py       # 调度 / 审查点 / 回退 / 续跑 / 预取
+├── storage/database.py       # SQLite 持久化（上下文/日志/记忆/NPC/缓存/输出）
 ├── npc/system.py             # M9 角色池 + 规则驱动的 traits 演变
 ├── memory/system.py          # M10 完整记忆 + 压缩记忆合并
 ├── image/                    # 图像生成子系统
@@ -314,6 +317,7 @@ launcher.py                   # Tkinter 桌面启动器（打包为 MADNE.exe）
 build_exe.ps1 / build_exe.bat # 一键构建 Windows EXE
 tests/
 ├── test_models.py
+├── test_dynamic_plan.py
 ├── test_pipeline.py
 ├── test_engine_resilience.py
 ├── test_image.py
@@ -326,26 +330,52 @@ tests/
 ```mermaid
 flowchart TD
     A[PlayerInput] --> B[IntentAI → CreationBrief]
-    B --> C[PlannerAI → TaskPlan]
-    C --> D[Orchestrator 执行 TaskPlan]
-    D --> E[WorldAI → Guardian 审查]
-    E --> F[FrameworkAI → Guardian 审查]
-    F --> G[NPCSystem 初始化/更新]
-    G --> H[FillerAI → SceneOutline]
-    H --> I[ScriptAI → DialogueScript]
-    I --> J[GuardianAI 四维审查]
-    J -->|不通过| I
-    J -->|通过| K[ImageGenClient → Illustration]
-    K --> L[OutputAdapter → GameOutput]
-    L --> M[MemorySystem 记录/压缩]
-    M --> N[ChoiceCacheAI 预取两层选项]
+    B --> C[PlannerAI → 动态 Agent 链]
+    C --> D[PlanCompiler 校验 / 补依赖 / 兜底交付]
+    D --> E[Orchestrator 执行 TaskPlan]
+    E --> F[PlanRuntime 运行期补齐缺失生产步骤]
+    F --> G[WorldAI → Guardian 审查]
+    G --> H[FrameworkAI → Guardian 审查]
+    H --> I[NPCSystem 初始化/更新]
+    I --> J[FillerAI → SceneOutline]
+    J --> K[ScriptAI → DialogueScript]
+    K --> L[GuardianAI 四维审查]
+    L -->|不通过| K
+    L -->|通过| M[ImageGenClient → Illustration]
+    M --> N[OutputAdapter → GameOutput]
+    N --> O[MemorySystem 记录/压缩]
+    O --> P[ChoiceCacheAI 预取两层选项]
 ```
 
-- 每个步骤的成功/失败/重试/降级都写入 `runtime/sessions/<id>/runlog.jsonl`。
-- 每完成一步把 `ContextStore` 落盘；`resume` 会跳过已完成步骤继续执行。
+- 每个步骤的成功/失败/重试/降级都写入 SQLite 的 `run_log` 表（`madne.db`）。
+- 每完成一步把 `ContextStore` 快照写入 `contexts` 表；`resume` 会跳过已完成步骤继续执行。
 - Guardian 驳回时，`suggested_fix + issues` 回灌给生成模块重写，最多 2 次，仍失败则降级交付并告警。
 - 世界红线会注入 Framework / Filler / Script / Guardian 的系统提示词。
-- 续写时 Planner 选择 `continuation` 模板，并继承上一轮 WorldBible、NPC 池与框架。
+- 续写时 Planner 复用已有 WorldBible / NPC 池，并按需要用 `npc_update` 更新角色状态。
+
+### 动态链如何工作
+
+PlannerAI 不再从写死的模板里二选一，而是输出一份「Agent 顺序建议」：
+
+1. **编译期**：`templates.compile_plan` 校验 Agent 名称，按 `required_inputs`
+   拓扑排序，自动补齐 `world → framework → npc → filler → script` 中缺失的步骤；
+   超出 `MADNE_MAX_PLAN_STEPS` 时优先保留交付链路。
+2. **运行期**：`PlanRuntime` 在执行每一步前检查必需输入；若上下文缺失，
+   会插入生产该输入的步骤（或把计划中靠后的生产步骤前移），最多修复
+   `MADNE_PLAN_REPAIR_LIMIT` 次/Agent。
+3. **收尾期**：`_ensure_delivery` 检查交付所需键，必要时追加步骤，保证
+   任何一次规划异常都不会阻断 `GameOutput` 产出。
+4. **降级**：LLM 输出非法或关闭动态链时，自动回退到 `cold_start` /
+   `continuation` 模板。
+
+相关环境变量：
+
+```dotenv
+MADNE_DYNAMIC_CHAIN=1        # 0 = 强制使用静态模板
+MADNE_MAX_PLAN_STEPS=8       # 单次规划的最大步骤数
+MADNE_PLAN_REPAIR_LIMIT=1    # 每个 Agent 的运行期修复次数
+MADNE_DB_PATH=               # 可选，自定义 SQLite 文件路径
+```
 
 ## 两层选项预取
 
@@ -356,23 +386,36 @@ flowchart TD
 - 下一回合直接使用第一层作为框架分支；再下一回合使用第二层派生的缓存，不必再次调用预取 AI。
 - 第二层消费完后自动重新预取，形成“预取 → 消费第一层 → 派生第二层 → 消费 → 重新预取”的交替循环。
 
-缓存写入 `runtime/sessions/<session>/choice_cache.json`；
+缓存写入 SQLite 的 `choice_cache` 表；
 CLI 使用 `--prefetch/--no-prefetch`，桌面界面使用“预取两层选项”开关与“预取选项”页。
 
 ## 产物位置
 
+状态统一存放在 SQLite 数据库 `runtime/madne.db`：
+
+| 表 | 内容 |
+|---|---|
+| `sessions` | 会话元数据、当前回合、计划模式 |
+| `contexts` / `plans` | 每回合可恢复上下文与动态计划链 |
+| `run_log` | 全流程步骤日志（含动态链修复记录） |
+| `memory_events` / `compressed_memory` | 完整记忆事件流与压缩记忆 |
+| `npcs` | NPC 档案与 traits |
+| `choice_cache` | 两层选项预取缓存 |
+| `outputs` | 每回合 `GameOutput` |
+
+媒体与导出文件仍保留在文件系统，便于 GUI / 游戏引擎直接读取：
+
 ```text
-runtime/sessions/<session_id>/
-├── runlog.jsonl                 # 全流程 RunLog
-├── npcs.json                    # NPC 档案与 traits
-├── memory/
-│   ├── full.jsonl               # 完整记忆事件流
-│   ├── compressed.json          # 压缩记忆
-│   └── meta.json                # 压缩触发计数
-└── cycles/cycle_001/
-    ├── context.json             # 可恢复上下文
-    └── output.json              # 游戏引擎 JSON
+runtime/
+├── madne.db                     # 所有可恢复状态（SQLite）
+└── sessions/<session_id>/
+    ├── assets/cycle_001.png     # 场景插图
+    └── cycles/cycle_001/
+        └── output.json          # 导出的引擎 JSON（数据库为唯一事实来源）
 ```
+
+> 首次打开旧版本会话目录时会自动导入 `runlog.jsonl` / `npcs.json` /
+> `memory/*` / `choice_cache.json` / `cycles/*`，无需手工迁移。
 
 ## 当前实现范围
 
@@ -380,10 +423,11 @@ runtime/sessions/<session_id>/
 
 - M0 数据模型、LLMClient 抽象、Mock / OpenAI 兼容双实现
 - M1–M7 Agent 主链路与提示词骨架
-- M3 Orchestrator：模板调度、审查点、回退、RunLog、ContextStore 断点续跑
+- M3 Orchestrator：动态规划链、运行期依赖修复、审查点、回退、RunLog、ContextStore 断点续跑
+- SQLite 统一持久化：会话/上下文/计划/日志/记忆/NPC/选项缓存/输出，兼容旧 JSON 数据自动迁移
 - M8 GuardianAI：世界观、框架、场景/台本三处审查；四维场景审查汇总；重写闭环
 - M9 NPCSystem：NPCAI 从 StoryFramework 抽取角色池并持久化，事件规则表驱动 traits 演变；Filler/Script 会校验角色 ID 与说话人是否在档案中
-- M10 MemorySystem：JSONL 完整记忆、每 N 事件压缩、压缩结果合并去重
+- M10 MemorySystem：完整记忆事件流、每 N 事件压缩、压缩结果合并去重（SQLite 存储）
 - M11 OutputAdapter：GameOutput 打包与引擎字段校验
 - 两层选项预取：ChoiceCacheAI + ChoiceCacheStore；下一轮使用第一层，再下一轮消费派生的第二层；CLI/GUI 可开关
 - 独立 API 配置窗口：本机用户配置、掩码输入、连接测试、清除配置；分发 exe 无需附带 `.env`

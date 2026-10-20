@@ -29,6 +29,7 @@ from .models import (
     NPCProfile,
     PlayerInput,
 )
+from .storage import SessionDatabase
 
 app = typer.Typer(
     add_completion=False,
@@ -192,8 +193,8 @@ def run(
             current_input = f"我选择：{player_choice}。请继续推进剧情。"
 
     typer.echo(
-        f"Session: {session} | RunLog: "
-        f"{settings.data_dir / 'sessions' / session / 'runlog.jsonl'}"
+        f"Session: {session} | Database: "
+        f"{settings.db_path or settings.data_dir / 'madne.db'}"
     )
 
 
@@ -252,14 +253,16 @@ def image(
     """为会话最近一回合重新生成插图（不调用叙事 LLM）。"""
     settings = _build_settings(data_dir, img_backend=img_backend)
     session_dir = settings.data_dir / "sessions" / session
-    candidates = sorted((session_dir / "cycles").glob("cycle_*/context.json"))
-    if not candidates:
-        typer.echo(f"会话 {session} 没有可用的 ContextStore")
-        raise typer.Exit(code=1)
-
+    database = SessionDatabase(
+        settings.db_path or settings.data_dir / "madne.db"
+    )
+    database.import_legacy_session(session, session_dir)
     ctx: ContextStore | None = None
-    for path in reversed(candidates):
-        candidate = ContextStore.load(path)
+    for cycle in reversed(database.context_cycles(session)):
+        snapshot = database.load_context(session, cycle)
+        if snapshot is None:
+            continue
+        candidate = ContextStore.from_snapshot(snapshot)
         if candidate.has("scene") and candidate.has("world"):
             ctx = candidate
             break
@@ -370,13 +373,16 @@ def image(
         / f"cycle_{ctx.cycle:03d}"
         / "output.json"
     )
-    if output_path.exists():
-        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    payload = database.load_output(session, ctx.cycle)
+    if payload is not None:
         payload["illustration"] = illustration.model_dump(mode="json")
-        output_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        database.save_output(session, ctx.cycle, payload)
+        # 同步导出文件（若仍存在），保持与旧版可视化路径兼容。
+        if output_path.exists():
+            output_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
     typer.echo(
         f"已生成插图：{target}（{result.backend} · "
@@ -410,8 +416,17 @@ def health(
             **client.health(),
         },
         "storage": {
+            "backend": "sqlite",
             "data_dir": str(settings.data_dir),
+            "database": str(
+                settings.db_path or settings.data_dir / "madne.db"
+            ),
             "exists": settings.data_dir.exists(),
+            "sessions": len(
+                SessionDatabase(
+                    settings.db_path or settings.data_dir / "madne.db"
+                ).list_sessions()
+            ),
         },
     }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))

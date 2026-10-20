@@ -118,9 +118,15 @@ class Settings:
     llm_max_tokens: int = 8192
     use_mock: bool = True
     data_dir: Path = Path("runtime")
+    db_path: Path | None = None
     memory_compress_every: int = 10
     review_max_rewrites: int = 2
     prefetch_choices: bool = True
+
+    # ---- 动态规划链 ----
+    dynamic_chain: bool = True
+    max_plan_steps: int = 8
+    plan_repair_limit: int = 1
 
     # ---- 图像生成（IMG_BACKEND: mock / comfyui / diffusers）----
     img_enabled: bool = True
@@ -174,9 +180,13 @@ class Settings:
             llm_max_tokens=max(256, _env_int("LLM_MAX_TOKENS", 8192)),
             use_mock=use_mock,
             data_dir=Path(data_dir),
+            db_path=_env_path("MADNE_DB_PATH"),
             memory_compress_every=max(1, _env_int("MADNE_MEMORY_COMPRESS_EVERY", 10)),
             review_max_rewrites=max(0, _env_int("MADNE_REVIEW_MAX_REWRITES", 2)),
             prefetch_choices=_env_bool("MADNE_PREFETCH_CHOICES", default=True),
+            dynamic_chain=_env_bool("MADNE_DYNAMIC_CHAIN", default=True),
+            max_plan_steps=max(3, _env_int("MADNE_MAX_PLAN_STEPS", 8)),
+            plan_repair_limit=max(0, _env_int("MADNE_PLAN_REPAIR_LIMIT", 1)),
             img_enabled=_env_bool("IMG_ENABLED", default=True),
             img_backend=(os.getenv("IMG_BACKEND") or "mock").strip().lower(),
             img_width=max(256, _env_int("IMG_WIDTH", 1024)),

@@ -1,4 +1,4 @@
-"""结构化运行日志：每次步骤尝试都追加落盘（JSONL）。"""
+"""结构化运行日志：写入 SQLite（可选 JSONL 兼容模式）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..storage import SessionDatabase
 
 
 @dataclass(slots=True)
@@ -25,16 +29,31 @@ class RunLogEntry:
 
 
 class RunLog:
-    """内存中保留全部条目，同时按需追加到 JSONL 文件。"""
+    """内存中保留条目；优先写数据库，未注入数据库时退回 JSONL。"""
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        database: "SessionDatabase | None" = None,
+        session_id: str = "",
+    ) -> None:
         self.path = Path(path) if path is not None else None
+        self.database = database
+        self.session_id = session_id
         self.entries: list[RunLogEntry] = []
+        if database is not None and session_id:
+            self.entries = [
+                RunLogEntry(**row)
+                for row in database.load_run_log(session_id)
+            ]
 
     def record(self, **kwargs) -> RunLogEntry:
         entry = RunLogEntry(**kwargs)
         self.entries.append(entry)
-        if self.path is not None:
+        if self.database is not None and self.session_id:
+            self.database.save_run_log(self.session_id, asdict(entry))
+        elif self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")

@@ -19,15 +19,30 @@ _EXAMPLE_BRIEF = {
 }
 
 _PLANNER_DECISION = {
+    "steps": [
+        {"agent": "world", "reason": "首次创作需要世界观"},
+        {"agent": "framework", "reason": "建立主线与分支"},
+        {"agent": "npc", "reason": "抽取可调度的角色池"},
+        {"agent": "filler", "reason": "把节拍填充为单场景"},
+        {"agent": "script", "reason": "产出对白台本"},
+    ],
     "template": "cold_start",
     "priority_focus": ["记忆交易的道德困境", "侦探与记忆商人的博弈"],
     "pacing": "medium",
+    "rationale": "冷启动：先立世界，再生成框架与角色，最后填充场景与台本。",
 }
 
 _PLANNER_CONTINUATION = {
+    "steps": [
+        {"agent": "npc_update", "reason": "根据玩家选择更新角色关系"},
+        {"agent": "framework", "reason": "延续主线并生成新分支"},
+        {"agent": "filler", "reason": "推进当前节拍"},
+        {"agent": "script", "reason": "产出对白台本"},
+    ],
     "template": "continuation",
     "priority_focus": ["兑现与阿凯的同盟", "追查苏离的交易对象"],
     "pacing": "medium",
+    "rationale": "续写：复用世界观，更新角色状态后继续推进。",
 }
 
 _WORLD_BIBLE = {

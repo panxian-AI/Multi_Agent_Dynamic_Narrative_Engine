@@ -54,8 +54,10 @@ from ..models import (
 )
 from ..npc import NPCSystem
 from ..output import OutputAdapter
+from ..storage import SessionDatabase
 from .choice_cache import ChoiceCacheStore
 from .context_store import ContextStore
+from .plan_runtime import PlanRuntime
 from .run_log import RunLog, RunLogEntry
 
 
@@ -107,6 +109,10 @@ class Orchestrator:
         )
 
         self._runtimes: dict[str, SessionRuntime] = {}
+        db_path = self.settings.db_path or (
+            self.settings.data_dir / "madne.db"
+        )
+        self.database = SessionDatabase(db_path)
 
     # ------------------------------------------------------------------ 公共入口
     def run_cycle(
@@ -180,41 +186,45 @@ class Orchestrator:
         brief = self.intent_ai.run(player_input, compressed)
         ctx.set("brief", brief)
 
-        # 2. 任务规划（静态模板实例化）
+        # 2. 动态任务规划（LLM 选择 Agent 链，编译器补齐依赖）
         plan = self.planner_ai.plan(
             brief,
             compressed,
             has_existing_world=ctx.has("world"),
+            available_keys=set(ctx.keys()),
+            max_steps=self.settings.max_plan_steps,
+            dynamic=self.settings.dynamic_chain,
         )
         ctx.set("plan", plan)
+        self.database.save_plan(
+            runtime.session_id,
+            cycle,
+            plan.model_dump(mode="json"),
+        )
         self._save_context(runtime, ctx)
 
-        # 3. 执行工作流
-        self._execute_plan(runtime, ctx)
+        # 3. 执行工作流（运行期会根据上下文动态补齐依赖）
+        plan_runtime = self._execute_plan(runtime, ctx)
 
         # 4. 输出适配 + 记忆更新
-        output = self._finalize(runtime, ctx)
+        output = self._finalize(runtime, ctx, plan_runtime)
 
         runtime.context = ctx
         runtime.last_output = output
         return output
 
     def resume(self, session_id: str) -> GameOutput:
-        """从最近一次持久化的 ContextStore 继续未完成的工作流。"""
+        """从数据库中最新的 ContextStore 继续未完成的工作流。"""
         state_dir = self.settings.data_dir / "sessions" / session_id
-        cycles_dir = state_dir / "cycles"
-        if not cycles_dir.exists():
+        self.database.import_legacy_session(session_id, state_dir)
+        if not self.database.session_exists(session_id):
             raise EngineError(f"会话 '{session_id}' 没有可恢复的运行记录")
 
-        candidates = sorted(
-            path
-            for path in cycles_dir.glob("cycle_*")
-            if (path / "context.json").exists()
-        )
-        if not candidates:
-            raise EngineError(f"会话 '{session_id}' 没有可恢复的上下文文件")
+        snapshot = self.database.load_latest_context(session_id)
+        if snapshot is None:
+            raise EngineError(f"会话 '{session_id}' 没有可恢复的上下文")
 
-        ctx = ContextStore.load(candidates[-1] / "context.json")
+        ctx = ContextStore.from_snapshot(snapshot)
         cached = ctx.get("game_output")
         if isinstance(cached, GameOutput):
             if cached.illustration is not None or self.image_client is None:
@@ -233,8 +243,8 @@ class Orchestrator:
         runtime = self._runtime(session_id)
         runtime.cycle = ctx.cycle
         runtime.context = ctx
-        self._execute_plan(runtime, ctx)
-        output = self._finalize(runtime, ctx)
+        plan_runtime = self._execute_plan(runtime, ctx)
+        output = self._finalize(runtime, ctx, plan_runtime)
         runtime.context = ctx
         runtime.last_output = output
         return output
@@ -248,7 +258,9 @@ class Orchestrator:
         if runtime is not None:
             return runtime.choice_cache_store.load()
         return ChoiceCacheStore(
-            self.settings.data_dir / "sessions" / session_id
+            self.settings.data_dir / "sessions" / session_id,
+            database=self.database,
+            session_id=session_id,
         ).load()
 
     def _load_prefetched_choices(
@@ -296,6 +308,16 @@ class Orchestrator:
 
         state_dir = self.settings.data_dir / "sessions" / session_id
         state_dir.mkdir(parents=True, exist_ok=True)
+        # 兼容旧版本：首次打开会话时把散落的 JSON/JSONL 导入数据库。
+        self.database.import_legacy_session(session_id, state_dir)
+        self.database.ensure_session(session_id)
+
+        latest = self.database.load_latest_context(session_id)
+        context = (
+            ContextStore.from_snapshot(latest)
+            if latest is not None
+            else ContextStore(session_id=session_id)
+        )
         runtime = SessionRuntime(
             session_id=session_id,
             state_dir=state_dir,
@@ -304,24 +326,96 @@ class Orchestrator:
                 self.llm,
                 compress_every=self.settings.memory_compress_every,
                 session_id=session_id,
+                database=self.database,
             ),
-            npc_system=NPCSystem(state_dir / "npcs.json").load(),
-            run_log=RunLog(state_dir / "runlog.jsonl"),
-            choice_cache_store=ChoiceCacheStore(state_dir),
-            context=ContextStore(session_id=session_id),
+            npc_system=NPCSystem(
+                database=self.database,
+                session_id=session_id,
+            ).load(),
+            run_log=RunLog(
+                database=self.database,
+                session_id=session_id,
+            ),
+            choice_cache_store=ChoiceCacheStore(
+                state_dir,
+                database=self.database,
+                session_id=session_id,
+            ),
+            context=context,
+            cycle=context.cycle,
         )
         self._runtimes[session_id] = runtime
         return runtime
 
     # ------------------------------------------------------------------ 步骤执行
-    def _execute_plan(self, runtime: SessionRuntime, ctx: ContextStore) -> None:
+    def _execute_plan(
+        self,
+        runtime: SessionRuntime,
+        ctx: ContextStore,
+    ) -> PlanRuntime:
         plan = ctx.require("plan")
         if not isinstance(plan, TaskPlan):
             raise EngineError("上下文中的 plan 类型非法")
-        for step in plan.steps:
-            if ctx.is_completed(step.step_id):
-                continue
+
+        plan_runtime = PlanRuntime(
+            plan,
+            repair_limit=self.settings.plan_repair_limit,
+            max_steps=self.settings.max_plan_steps,
+        )
+        self._log_plan(runtime, ctx, plan)
+
+        while True:
+            step = plan_runtime.next_step(ctx)
+            if step is None:
+                break
             self._execute_step(runtime, ctx, step)
+            plan_runtime.complete(step)
+
+        if plan_runtime.mutations:
+            self._log(
+                runtime,
+                ctx,
+                TaskStep(
+                    step_id="00_plan_adapted",
+                    agent="planner",
+                    output_key="plan",
+                    input_keys=[],
+                    fallback="skip",
+                ),
+                status="success",
+                attempt=1,
+                tokens=0,
+                duration_ms=0,
+                detail=plan_runtime.mutation_summary()[:2000],
+            )
+        return plan_runtime
+
+    def _log_plan(
+        self,
+        runtime: SessionRuntime,
+        ctx: ContextStore,
+        plan: TaskPlan,
+    ) -> None:
+        self._log(
+            runtime,
+            ctx,
+            TaskStep(
+                step_id="00_plan",
+                agent="planner",
+                output_key="plan",
+                input_keys=[],
+                fallback="skip",
+            ),
+            status="success",
+            attempt=1,
+            tokens=0,
+            duration_ms=0,
+            detail=(
+                f"mode={plan.mode}｜"
+                + " -> ".join(step.agent for step in plan.steps)
+                + (f"｜{plan.rationale}" if plan.rationale else "")
+            )[:2000],
+        )
 
     def _execute_step(
         self,
@@ -521,6 +615,7 @@ class Orchestrator:
         self,
         runtime: SessionRuntime,
         ctx: ContextStore,
+        plan_runtime: PlanRuntime | None = None,
     ) -> GameOutput:
         cached = ctx.get("game_output")
         if isinstance(cached, GameOutput):
@@ -547,8 +642,16 @@ class Orchestrator:
                     runtime.output_path = self.adapter.write(
                         cached, cycle_dir / "output.json"
                     )
+                    self.database.save_output(
+                        runtime.session_id,
+                        ctx.cycle,
+                        cached.to_engine_dict(),
+                    )
                     self._save_context(runtime, ctx)
             return cached
+
+        # 动态链兜底：若计划因失败/上下文缺失没有产出交付必需键，运行期补齐。
+        self._ensure_delivery(runtime, ctx, plan_runtime)
 
         scene = ctx.require("scene")
         script = ctx.require("script")
@@ -567,6 +670,11 @@ class Orchestrator:
 
         cycle_dir = runtime.state_dir / "cycles" / f"cycle_{ctx.cycle:03d}"
         runtime.output_path = self.adapter.write(output, cycle_dir / "output.json")
+        self.database.save_output(
+            runtime.session_id,
+            ctx.cycle,
+            output.to_engine_dict(),
+        )
 
         choices_text = " / ".join(
             f"{branch.branch_id}:{branch.description}"
@@ -591,6 +699,50 @@ class Orchestrator:
             self._prefetch_choices(runtime, ctx, output, framework)
         self._save_context(runtime, ctx)
         return output
+
+    def _ensure_delivery(
+        self,
+        runtime: SessionRuntime,
+        ctx: ContextStore,
+        plan_runtime: PlanRuntime | None,
+    ) -> None:
+        """运行期补齐交付链路：world -> framework -> npcs -> scene -> script。"""
+        if plan_runtime is None:
+            plan = ctx.get("plan")
+            if not isinstance(plan, TaskPlan):
+                return
+            plan_runtime = PlanRuntime(
+                plan,
+                repair_limit=self.settings.plan_repair_limit,
+                max_steps=self.settings.max_plan_steps,
+            )
+
+        ensure: tuple[tuple[str, str], ...] = (
+            ("world", "world"),
+            ("framework", "framework"),
+            ("npcs", "npc"),
+            ("scene", "filler"),
+            ("script", "script"),
+        )
+        appended = False
+        for output_key, agent in ensure:
+            if ctx.has(output_key):
+                continue
+            plan_runtime.append_agent(
+                agent,
+                reason=f"交付缺少 {output_key}，运行期补齐",
+            )
+            appended = True
+
+        if not appended:
+            return
+
+        while True:
+            step = plan_runtime.next_step(ctx)
+            if step is None:
+                break
+            self._execute_step(runtime, ctx, step)
+            plan_runtime.complete(step)
 
     # ------------------------------------------------------------------ 插图生成
     def _illustrate(
@@ -643,7 +795,7 @@ class Orchestrator:
             mode = "self_attn"
             mode_warnings.append(
                 "未找到角色定妆照，id_injection 已回退 self_attn；"
-                "可在 npcs.json 中为角色设置 reference_image"
+                "可在数据库 npcs 表中为角色设置 reference_image"
             )
 
         filename = f"cycle_{ctx.cycle:03d}.png"
@@ -953,13 +1105,10 @@ class Orchestrator:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _save_context(self, runtime: SessionRuntime, ctx: ContextStore) -> Path:
-        path = (
-            runtime.state_dir
-            / "cycles"
-            / f"cycle_{ctx.cycle:03d}"
-            / "context.json"
-        )
-        return ctx.save(path)
+        plan = ctx.get("plan")
+        mode = plan.mode if isinstance(plan, TaskPlan) else ""
+        self.database.save_context(ctx.snapshot(), plan_mode=mode)
+        return self.database.path
 
     def _log(
         self,
