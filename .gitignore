@@ -17,3 +17,9 @@ selftest_real_result.txt
 runtime_selftest/
 .tmp_*/
 .tmp_*.py
+
+sd_turbo.safetensors
+*.safetensors
+*.ckpt
+*.bin
+
