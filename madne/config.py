@@ -135,14 +135,22 @@ class Settings:
     img_backend: str = "diffusers"
     img_backend_explicit: bool = False
     img_timeout: int = 60
-    img_width: int = 512
-    img_height: int = 512
+    # 本地 SD 默认输出 1024：底图 ≤512 生成后 hires 二次采样补细节
+    img_width: int = 1024
+    img_height: int = 1024
     img_steps: int = 4
     img_guidance: float = 0.0
     img_seed: int | None = None
     img_style: str = DEFAULT_IMG_STYLE
     img_consistency_mode: str = "self_attn"
     img_metrics: bool = False
+
+    # ---- Hires-fix 二次采样（本地 SD）：底图 ≤512 生成后放大重绘补细节 ----
+    # sd-turbo 只在 512 附近成立，直接生成大图会构图崩坏；放大必须走 img2img。
+    img_upscale: int = 2
+    img_hires_steps: int = 20
+    img_hires_strength: float = 0.4
+    img_hires_guidance: float = 1.5
 
     # ComfyUI
     comfyui_url: str = "http://127.0.0.1:8188"
@@ -206,8 +214,8 @@ class Settings:
             img_backend=img_backend_env or "diffusers",
             img_backend_explicit=bool(img_backend_env),
             img_timeout=max(10, _env_int("IMG_TIMEOUT", 60)),
-            img_width=max(256, _env_int("IMG_WIDTH", 512)),
-            img_height=max(256, _env_int("IMG_HEIGHT", 512)),
+            img_width=max(256, _env_int("IMG_WIDTH", 1024)),
+            img_height=max(256, _env_int("IMG_HEIGHT", 1024)),
             img_steps=max(1, _env_int("IMG_STEPS", 4)),
             img_guidance=max(0.0, _env_float("IMG_GUIDANCE", 0.0)),
             img_seed=_env_optional_int("IMG_SEED"),
@@ -247,6 +255,15 @@ class Settings:
             ).strip(),
             img_api_stream=_env_bool("IMG_API_STREAM", default=False),
             img_metrics=_env_bool("IMG_METRICS", default=False),
+            # IMG_UPSCALE=0/1 关闭二次采样；>=2 时底图 ≤512 生成后放大重绘
+            img_upscale=max(0, _env_int("IMG_UPSCALE", 2)),
+            img_hires_steps=max(1, _env_int("IMG_HIRES_STEPS", 20)),
+            img_hires_strength=min(
+                0.99, max(0.05, _env_float("IMG_HIRES_STRENGTH", 0.4))
+            ),
+            img_hires_guidance=max(
+                0.0, _env_float("IMG_HIRES_GUIDANCE", 1.5)
+            ),
             comfyui_url=os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
             comfyui_checkpoint=os.getenv(
                 "COMFYUI_CHECKPOINT", "sd_xl_base_1.0.safetensors"

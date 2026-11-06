@@ -487,7 +487,8 @@ class ApiConfigDialog(tk.Toplevel):
             self._img_hint_var.set(
                 f"当前：本地 SD，单张上限 {timeout} 秒。\n"
                 f"模型：{model}（源码运行可在 .env 用 IMG_MODEL 修改）\n"
-                "分辨率/步数由 IMG_WIDTH / IMG_HEIGHT / IMG_STEPS 控制。\n"
+                "默认输出 1024×1024：底图按 ≤512 生成后自动 hires 二次采样\n"
+                "补细节（IMG_UPSCALE=0 可关闭）。\n"
                 "首次生图会自动下载权重（约 2.4GB）；若项目/exe 目录已有 "
                 "sd_turbo.safetensors，会优先直接加载本地单文件。\n"
                 "官方站点失败会自动切到 hf-mirror.com，下载支持断点续传、"

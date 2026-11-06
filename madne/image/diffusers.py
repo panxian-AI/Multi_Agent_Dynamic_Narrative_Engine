@@ -40,6 +40,10 @@ class DiffusersImageGenerator:
         timeout: int = 60,
         hf_endpoint: str | None = None,
         local_checkpoint: str | Path | None = None,
+        upscale: int = 2,
+        hires_steps: int = 20,
+        hires_strength: float = 0.4,
+        hires_guidance: float = 1.5,
     ) -> None:
         self.model = model
         self.cache_dir = Path(cache_dir)
@@ -52,7 +56,14 @@ class DiffusersImageGenerator:
             Path(ip_adapter_dir) if ip_adapter_dir is not None else None
         )
         self.timeout = max(1, int(timeout))
+        # Hires-fix：底图按 ≤512 生成，再 img2img 放大到目标尺寸补细节。
+        # 蒸馏模型（sd-turbo）直接生成 >512 的图会构图崩坏，必须走二次采样。
+        self.upscale = max(0, int(upscale))
+        self.hires_steps = max(1, int(hires_steps))
+        self.hires_strength = min(0.99, max(0.05, float(hires_strength)))
+        self.hires_guidance = max(0.0, float(hires_guidance))
         self._pipeline: Any = None
+        self._img2img_pipeline: Any = None
         self._device: Any = None
         self._dtype: Any = None
         self._torch: Any = None
@@ -107,6 +118,7 @@ class DiffusersImageGenerator:
                 "detail": (
                     f"{gpu or 'cpu'} · 本地单文件 "
                     f"{self.local_checkpoint.name} · 单张≤{self.timeout}s"
+                    + self._hires_detail()
                 ),
             }
 
@@ -114,6 +126,7 @@ class DiffusersImageGenerator:
         endpoint = resolve_endpoint(self.hf_endpoint) or "https://huggingface.co"
         detail = (
             f"{gpu or 'cpu'} · {self.model} · 单张≤{self.timeout}s · {endpoint}"
+            + self._hires_detail()
         )
         if not cached:
             detail += (
@@ -135,6 +148,11 @@ class DiffusersImageGenerator:
             self.model, self.cache_dir
         )
 
+    def _hires_detail(self) -> str:
+        if self.upscale >= 2:
+            return f" · hires {self.upscale}x（底图≤512 二次采样）"
+        return ""
+
     def _has_local_checkpoint(self) -> bool:
         return (
             self.local_checkpoint is not None
@@ -146,13 +164,16 @@ class DiffusersImageGenerator:
         pipe, device, torch_module = self._pipeline_or_raise(request.on_status)
         warnings: list[str] = []
 
+        target_w, target_h = int(request.width), int(request.height)
+        base_w, base_h = self._base_size(target_w, target_h)
+
         # CUDA 需要 CUDA generator；MPS/CPU 使用 CPU generator。
         generator_device = "cuda" if device.type == "cuda" else "cpu"
         kwargs: dict[str, Any] = {
             "prompt": request.prompt,
             "negative_prompt": request.negative_prompt,
-            "width": request.width,
-            "height": request.height,
+            "width": base_w,
+            "height": base_h,
             "num_inference_steps": request.steps,
             "guidance_scale": request.guidance_scale,
             "generator": torch_module.Generator(
@@ -220,8 +241,26 @@ class DiffusersImageGenerator:
 
         if not images:
             raise ImageGenError("diffusers 未返回图片")
+        image = images[0]
+
+        # Hires-fix：底图 ≤512，img2img 放大到目标尺寸补细节。
+        if (base_w, base_h) != (target_w, target_h):
+            image = self._hires_pass(
+                pipe,
+                request,
+                image,
+                target_w,
+                target_h,
+                generator_device,
+                deadline,
+                _report,
+                torch_module,
+                kwargs.get("ip_adapter_image"),
+                warnings,
+            )
+
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        images[0].save(request.output_path)
+        image.save(request.output_path)
 
         return ImageResult(
             path=request.output_path,
@@ -229,14 +268,122 @@ class DiffusersImageGenerator:
             prompt=request.prompt,
             negative_prompt=request.negative_prompt,
             seed=request.seed,
-            width=request.width,
-            height=request.height,
+            width=target_w,
+            height=target_h,
             consistency_mode=request.consistency_mode,
             reference_images=list(request.reference_images),
             warnings=warnings,
         )
 
     # ------------------------------------------------------------------ 内部实现
+    def _base_size(self, width: int, height: int) -> tuple[int, int]:
+        """计算底图尺寸：目标边长超过 512 时缩到 ≤512（保持长宽比，8 的倍数）。
+
+        蒸馏底模（sd-turbo）只在 512 附近成立，直接生成大图会重复纹理、
+        构图崩坏；放大必须由 hires 二次采样完成。
+        """
+        max_side = max(int(width), int(height))
+        if self.upscale < 2 or max_side <= 512:
+            return int(width), int(height)
+        scale = 512.0 / max_side
+        base_w = min(int(width), max(256, round(width * scale / 8) * 8))
+        base_h = min(int(height), max(256, round(height * scale / 8) * 8))
+        return base_w, base_h
+
+    def _hires_pass(
+        self,
+        pipe: Any,
+        request: ImageRequest,
+        base_image: Any,
+        width: int,
+        height: int,
+        generator_device: str,
+        deadline: float,
+        _report: Any,
+        torch_module: Any,
+        ip_adapter_image: Any,
+        warnings: list[str],
+    ) -> Any:
+        """img2img 二次采样：低强度重绘放大图，补出细节。"""
+        try:
+            from diffusers import AutoPipelineForImage2Image
+        except ImportError as exc:
+            warnings.append(f"hires 二次采样不可用，已使用底图：{exc}")
+            return base_image
+
+        if self._img2img_pipeline is None:
+            self._img2img_pipeline = AutoPipelineForImage2Image.from_pipe(
+                pipe
+            )
+        img2img = self._img2img_pipeline
+        try:
+            img2img.set_progress_bar_config(disable=True)
+        except Exception:
+            pass
+
+        # img2img 管线不接受 width/height（会被 **kwargs 静默吞掉，
+        # 输出永远等于输入图尺寸）——必须先把底图放大到目标尺寸。
+        try:
+            from PIL import Image as PILImage
+        except ImportError as exc:
+            warnings.append(f"hires 二次采样不可用（缺 Pillow）：{exc}")
+            return base_image
+        init_image = base_image.resize(
+            (int(width), int(height)), PILImage.LANCZOS
+        )
+
+        kwargs: dict[str, Any] = {
+            "prompt": request.prompt,
+            "negative_prompt": request.negative_prompt,
+            "image": init_image,
+            "strength": self.hires_strength,
+            "num_inference_steps": self.hires_steps,
+            "guidance_scale": self.hires_guidance,
+            "generator": torch_module.Generator(
+                device=generator_device
+            ).manual_seed(request.seed),
+            "callback_on_step_end": lambda _p, step, _t, cb: (
+                self._hires_step_check(deadline, step)
+                or _report(step + 1, self.hires_steps)
+                or cb
+            ),
+        }
+        if ip_adapter_image is not None:
+            kwargs["ip_adapter_image"] = ip_adapter_image
+
+        try:
+            out = img2img(**kwargs).images[0]
+            if out.size != (int(width), int(height)):
+                warnings.append(
+                    f"hires 输出尺寸 {out.size} 与目标 "
+                    f"{(int(width), int(height))} 不符，已缩放对齐"
+                )
+                out = out.resize(
+                    (int(width), int(height)), PILImage.LANCZOS
+                )
+            return out
+        except TypeError as exc:
+            if "callback_on_step_end" not in str(exc):
+                raise ImageGenError(f"hires 二次采样失败: {exc}") from exc
+            kwargs.pop("callback_on_step_end", None)
+            try:
+                return img2img(**kwargs).images[0]
+            except Exception as fallback_exc:
+                raise ImageGenError(
+                    f"hires 二次采样失败: {fallback_exc}"
+                ) from fallback_exc
+        except ImageTimeoutError:
+            raise
+        except Exception as exc:
+            warnings.append(f"hires 二次采样失败，已使用底图：{exc}")
+            return base_image
+
+    @staticmethod
+    def _hires_step_check(deadline: float, step_index: int) -> None:
+        if time.monotonic() > deadline:
+            raise ImageTimeoutError(
+                f"本地 SD hires 二次采样超时（已完成 {step_index} 步）"
+            )
     def _pipeline_or_raise(
         self, on_status: Any = None
     ) -> tuple[Any, Any, Any]:

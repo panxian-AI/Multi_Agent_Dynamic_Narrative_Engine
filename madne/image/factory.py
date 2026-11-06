@@ -81,6 +81,10 @@ def create_image_client(settings: Settings) -> ImageGenClient:
                 timeout=settings.img_timeout,
                 hf_endpoint=settings.hf_endpoint,
                 local_checkpoint=checkpoint,
+                upscale=settings.img_upscale,
+                hires_steps=settings.img_hires_steps,
+                hires_strength=settings.img_hires_strength,
+                hires_guidance=settings.img_hires_guidance,
             )
         )
 
