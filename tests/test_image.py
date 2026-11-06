@@ -746,6 +746,59 @@ def test_clip_small_budget_terminates():
     assert not clipped.endswith(("detectiv", "detect", "hood"))
 
 
+def test_build_sd_prompt_single_character_solo():
+    """默认单人构图：只写一个角色片段并带 solo 标签。
+
+    回归：两个 NPC 片段曾诱导模型画出"双头"人物。
+    """
+    from madne.image.prompts import build_sd_prompt
+
+    scene = SceneOutline(
+        scene_id="s3",
+        summary="侦探在记忆诊所咨询医生",
+        setting="纯白记忆诊所",
+        visual_prompt=(
+            "a weathered detective in a grey trench coat sits in a "
+            "sterile white memory clinic"
+        ),
+        involved_npcs=["npc_a", "npc_b"],
+    )
+    npcs = [
+        NPCProfile(
+            npc_id="npc_a", name="侦探", role="主角",
+            appearance="三十多岁男性，灰色风衣，胡茬",
+        ),
+        NPCProfile(
+            npc_id="npc_b", name="医生", role="对话者",
+            appearance="四十多岁，白大褂，眼镜",
+        ),
+    ]
+    prompt = build_sd_prompt(scene, npcs)
+    assert "医生" not in prompt, "默认应只画主角，医生不进 prompt"
+    assert "solo" in prompt and "single character" in prompt
+    assert "侦探" in prompt
+
+
+def test_build_sd_prompt_multi_character_labels_count():
+    """IMG_MAX_CHARACTERS>=2 时明确人数标签。"""
+    from madne.image.prompts import build_sd_prompt
+
+    scene = SceneOutline(
+        scene_id="s4",
+        summary="两人对话",
+        setting="咖啡馆",
+        visual_prompt="two men talking in a cafe",
+        involved_npcs=["npc_a", "npc_b"],
+    )
+    npcs = [
+        NPCProfile(npc_id="npc_a", name="甲", role="客", appearance="高个子"),
+        NPCProfile(npc_id="npc_b", name="乙", role="主", appearance="矮个子"),
+    ]
+    prompt = build_sd_prompt(scene, npcs, max_characters=2)
+    assert "two people" in prompt and "different faces" in prompt
+    assert "甲" in prompt and "乙" in prompt
+
+
 
 def test_diffusers_backend_truncates_oversize_prompt(tmp_path):
     """CLI/编排层都换了 sd prompt，这里直接验证管线内 tokenizer 兜底。"""

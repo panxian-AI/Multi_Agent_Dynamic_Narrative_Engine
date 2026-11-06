@@ -297,7 +297,12 @@ def image(
         else None
     )
     if settings.img_backend == "diffusers":
-        prompt = build_sd_prompt(scene, npcs, settings.img_style)
+        prompt = build_sd_prompt(
+            scene,
+            npcs,
+            settings.img_style,
+            max_characters=settings.img_max_characters,
+        )
     else:
         prompt = build_scene_prompt(
             scene,

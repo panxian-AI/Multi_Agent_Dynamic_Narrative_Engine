@@ -152,6 +152,10 @@ class Settings:
     img_hires_strength: float = 0.4
     img_hires_guidance: float = 1.5
 
+    # 本地 SD 画进画面的角色数上限。默认 1：单人构图最稳；sd-turbo 低
+    # guidance 下 negative prompt 几乎无效，多人同框极易"人物重复/双头"。
+    img_max_characters: int = 1
+
     # ComfyUI
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_checkpoint: str = "sd_xl_base_1.0.safetensors"
@@ -264,6 +268,7 @@ class Settings:
             img_hires_guidance=max(
                 0.0, _env_float("IMG_HIRES_GUIDANCE", 1.5)
             ),
+            img_max_characters=max(1, _env_int("IMG_MAX_CHARACTERS", 1)),
             comfyui_url=os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
             comfyui_checkpoint=os.getenv(
                 "COMFYUI_CHECKPOINT", "sd_xl_base_1.0.safetensors"

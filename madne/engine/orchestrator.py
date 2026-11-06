@@ -786,11 +786,12 @@ class Orchestrator:
         )
         if self.settings.img_backend == "diffusers":
             # SD 类本地模型 CLIP 只有 77 token：按优先级预算组装，
-            # 否则角色外观 / 风格标签会被静默截掉。
+            # 否则角色外观 / 风格标签会被静默截掉。默认单人构图。
             prompt = build_sd_prompt(
                 scene,
                 involved,
                 self.settings.img_style,
+                max_characters=self.settings.img_max_characters,
             )
         else:
             prompt = build_scene_prompt(

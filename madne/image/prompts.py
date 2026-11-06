@@ -145,12 +145,18 @@ def build_sd_prompt(
     npcs: list[NPCProfile],
     style: str = "",
     max_tokens: int = 72,
+    max_characters: int = 1,
 ) -> str:
     """面向 SD / CLIP 77-token 上限的提示词组装。
 
-    优先级：镜头描述 → 角色外观（最多 3 个）→ 场景关键词 → 风格标签 →
-    质量收尾标签。中文叙事长段省略；预算不足时丢弃低优先级段落而不是
-    无差别硬截断，保证最重要的信息总是保留。
+    优先级：镜头描述 → 角色外观（最多 ``max_characters`` 个）→ 场景关键词
+    → 风格标签 → 构图收尾标签。中文叙事长段省略；预算不足时丢弃低优先级
+    段落而不是无差别硬截断，保证最重要的信息总是保留。
+
+    构图标签按实际写入的角色数明确人数（solo / two people / three
+    people）：sd-turbo 这类蒸馏模型在低 guidance 下 negative prompt 几乎
+    不生效，"duplicate character" 拦不住多人同框，必须在正向 prompt 里
+    明确人数。默认单角色——单人构图最稳，剧情对话对象不画进画面。
     """
     budget = max(20, int(max_tokens))
     segments: list[str] = []
@@ -168,7 +174,8 @@ def build_sd_prompt(
 
     _try_add(scene.visual_prompt.strip(), 30, 18)
 
-    involved = select_involved_npcs(scene, npcs)[:3]
+    max_characters = max(1, int(max_characters))
+    involved = select_involved_npcs(scene, npcs)[:max_characters]
     for npc in involved:
         desc = npc.appearance.strip() or npc.role.strip()
         desc = f"{npc.name}，{desc}" if npc.name else desc
@@ -176,6 +183,14 @@ def build_sd_prompt(
 
     _try_add(style.strip(), 12, 8)
     _try_add(scene.setting.strip(), 14, 8)
+
+    count = len(involved)
+    if count == 1:
+        _try_add("solo, single character", 12, 0)
+    elif count == 2:
+        _try_add("two people, different faces", 12, 0)
+    elif count >= 3:
+        _try_add("three people, distinct faces", 12, 0)
     _try_add("cinematic, highly detailed, no text", 10, 0)
 
     return ", ".join(segments)
