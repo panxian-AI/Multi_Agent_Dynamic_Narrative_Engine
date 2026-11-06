@@ -15,6 +15,7 @@ from ..exceptions import ImageGenError, ImageTimeoutError
 from ..hf_env import configure_hf_env, resolve_endpoint
 from .base import ImageRequest, ImageResult
 from .downloads import (
+    bundled_config_dir,
     cached_snapshot_dir,
     download_model,
     is_model_cached,
@@ -257,8 +258,13 @@ class DiffusersImageGenerator:
             import torch
             from diffusers import AutoPipelineForText2Image
         except ImportError as exc:
+            # 必须带上真实原因：打包版最常见的是缺少 requests/filelock 等
+            # 发行版元数据（diffusers 用 importlib.metadata 校验版本），
+            # 只报“需要安装依赖”会把排查方向带偏。
             raise ImageGenError(
-                "diffusers 后端需要安装 torch / diffusers / transformers / accelerate"
+                f"diffusers 后端依赖导入失败：{type(exc).__name__}: {exc}。"
+                "源码运行请安装 torch / diffusers / transformers / accelerate；"
+                "打包版请确认已 --copy-metadata requests / filelock / numpy。"
             ) from exc
 
         if torch.cuda.is_available():
@@ -370,7 +376,11 @@ class DiffusersImageGenerator:
             ) from exc
 
         pipeline_cls: Any = StableDiffusionPipeline
+        # 优先用 HF 缓存里的快照配置；没有缓存时退回随包内置的配置目录，
+        # 这样“exe + 单个 safetensors”也能完全离线加载。
         config_dir = cached_snapshot_dir(self.model, self.cache_dir)
+        if config_dir is None:
+            config_dir = bundled_config_dir(self.model)
         if config_dir is not None:
             try:
                 import json

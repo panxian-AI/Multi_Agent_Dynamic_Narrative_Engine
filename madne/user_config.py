@@ -236,5 +236,9 @@ def load_app_settings() -> Settings:
                 else "diffusers"
             ),
             use_mock=True,
+            # 打包版固定以「exe 同目录」为模型根目录：既找 exe 旁的
+            # sd_turbo.safetensors（cache_dir 的父目录），也找 exe/models
+            # 里的 HF 缓存，避免从快捷方式启动时 cwd 不对而找不到模型。
+            model_cache_dir=Path(sys.executable).resolve().parent / "models",
         )
     return apply_api_config(settings)

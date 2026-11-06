@@ -82,7 +82,29 @@ $collectArgs = @(
     "--collect-submodules", "accelerate",
     "--collect-submodules", "huggingface_hub",
     "--collect-submodules", "safetensors",
-    "--hidden-import", "tqdm.auto"
+    "--collect-data", "certifi",
+    "--hidden-import", "tqdm.auto",
+    "--hidden-import", "requests",
+    # diffusers 导入时用 importlib.metadata 校验这些发行版的版本，
+    # 少了 dist-info 会直接 ImportError 并静默降级为 Mock 占位图。
+    "--copy-metadata", "requests",
+    "--copy-metadata", "filelock",
+    "--copy-metadata", "numpy",
+    "--copy-metadata", "packaging",
+    "--copy-metadata", "diffusers",
+    "--copy-metadata", "transformers",
+    "--copy-metadata", "huggingface-hub",
+    "--copy-metadata", "accelerate",
+    "--copy-metadata", "safetensors",
+    "--copy-metadata", "Pillow",
+    "--copy-metadata", "tokenizers",
+    "--copy-metadata", "regex",
+    "--copy-metadata", "tqdm",
+    # 单文件权重加载所需管线配置：exe + sd_turbo.safetensors 可完全离线出图
+    # 注意用绝对路径：--specpath build 会让相对路径解析到 build 目录下
+    "--add-data", "$PWD\madne\image\configs;madne\image\configs",
+    # 冻结环境 CA 根证书修复
+    "--runtime-hook", "$PWD\build_support\rthook_certs.py"
 )
 $modeArg = if ($OneDir) { "--onedir" } else { "--onefile" }
 if (-not $OneDir) {

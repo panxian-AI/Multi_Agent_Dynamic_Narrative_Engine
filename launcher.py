@@ -2063,7 +2063,67 @@ def run_real_selftest() -> int:
         return 1
 
 
+def run_image_selftest() -> int:
+    """无界面生图自检：验证打包后的本地 SD 链路能否真正出图。
+
+    不调用叙事 LLM，只走 create_image_client → generate，
+    把后端、警告与耗时写入 ``selftest_image_result.txt``。
+    """
+    result_path = BASE_DIR / "selftest_image_result.txt"
+    target = BASE_DIR / "runtime_selftest_image" / "selftest.png"
+    started = time.monotonic()
+    try:
+        settings = load_app_settings()
+        client = create_image_client(settings)
+        health = client.health()
+        result = client.generate(
+            ImageRequest(
+                prompt=(
+                    "a lone detective standing in a neon-lit rainy alley at night, "
+                    "cinematic concept art, highly detailed"
+                ),
+                negative_prompt="blurry, low quality, watermark, text",
+                output_path=target,
+                width=settings.img_width,
+                height=settings.img_height,
+                seed=7,
+                steps=settings.img_steps,
+                guidance_scale=settings.img_guidance,
+            )
+        )
+        elapsed = time.monotonic() - started
+        ok = result.backend != "mock" and result.path.exists()
+        result_path.write_text(
+            "\n".join(
+                [
+                    f"MADNE image selftest {'OK' if ok else 'DEGRADED'}",
+                    f"frozen={IS_FROZEN}",
+                    f"base_dir={BASE_DIR}",
+                    f"backend={result.backend}",
+                    f"model={settings.img_model}",
+                    f"model_cache_dir={settings.model_cache_dir}",
+                    f"size={result.width}x{result.height} steps={settings.img_steps}",
+                    f"elapsed={elapsed:.1f}s",
+                    f"image={result.path}",
+                    f"health={health}",
+                    "warnings:",
+                    *[f"- {warning}" for warning in result.warnings],
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return 0 if ok else 1
+    except Exception as exc:
+        result_path.write_text(
+            f"MADNE image selftest FAILED\n{type(exc).__name__}: {exc}",
+            encoding="utf-8",
+        )
+        return 1
+
+
 def main() -> None:
+    if "--selftest-image" in sys.argv:
+        raise SystemExit(run_image_selftest())
     if "--selftest-real" in sys.argv:
         raise SystemExit(run_real_selftest())
     if "--selftest" in sys.argv:

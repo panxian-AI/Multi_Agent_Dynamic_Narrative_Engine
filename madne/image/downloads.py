@@ -560,6 +560,25 @@ def cached_snapshot_dir(model: str, cache_dir: str | Path) -> Path | None:
     return _cached_snapshot(model, cache_dir)
 
 
+def bundled_config_dir(model: str) -> Path | None:
+    """随包分发的管线配置目录（只含 json / tokenizer，约 1.6MB）。
+
+    单文件权重加载（``from_single_file``）需要 ``model_index.json`` 等组件
+    配置；没有本地 HF 缓存时 diffusers 会去 Hub 下载配置——打包版常常因此
+    在离线或证书异常时失败。这里提供一份内置配置，实现完全离线加载。
+    """
+    base = model.rstrip("/\\").split("/")[-1].split("\\")[-1].lower()
+    candidates = [
+        Path(__file__).resolve().parent / "configs" / base,
+        Path(__file__).resolve().parent / "configs" / base.replace("_", "-"),
+        Path(__file__).resolve().parent / "configs" / base.replace("-", "_"),
+    ]
+    for candidate in candidates:
+        if (candidate / "model_index.json").is_file():
+            return candidate
+    return None
+
+
 def find_local_checkpoint(
     model: str,
     cache_dir: str | Path,
