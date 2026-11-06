@@ -666,3 +666,150 @@ def test_hunyuan_client_requires_api_key(tmp_path: Path):
                 height=72,
             )
         )
+
+
+# ---------------------------------------------------------------- SD prompt 预算
+class _FakeTokenizer:
+    model_max_length = 77
+
+    def __call__(self, prompt, add_special_tokens=True, truncation=False):
+        # 近似：每个空格分段算 1 token，CJK 每字 1 token
+        n = 0
+        for ch in prompt:
+            n += 2 if ord(ch) > 0x2E80 else (1 if ch == " " else 0.5)
+        class _Out:
+            input_ids = list(range(int(n) + 2))
+        return _Out()
+
+    def decode(self, ids, skip_special_tokens=True):
+        return "trimmed prompt"
+
+
+def test_build_sd_prompt_within_clip_budget():
+    from madne.image.prompts import build_sd_prompt, _estimate_clip_tokens
+
+    scene = SceneOutline(
+        scene_id="s1",
+        summary="很长很长的中文情节描述，" * 30,
+        setting="锈港市旧码头区边缘的棚屋区与地下检修井，狭窄潮湿",
+        actions=["玩家蹲下检查缆线", "终端弹出审计标记"],
+        visual_prompt="a hooded detective inspecting cables in a flooded maintenance shaft, green indicator lights",
+        involved_npcs=["npc1", "npc2"],
+    )
+    npcs = [
+        NPCProfile(
+            npc_id="npc1",
+            name="缝合工",
+            role="中间人",
+            appearance="五十岁上下，灰白络腮胡，穿褪色油布外套，左眼琥珀色光学义体",
+        ),
+        NPCProfile(
+            npc_id="npc2",
+            name="阿凯",
+            role="盟友",
+            appearance="二十多岁短发青年，深灰防雨工装夹克",
+        ),
+    ]
+    prompt = build_sd_prompt(scene, npcs, style="cyberpunk, cinematic")
+    tokens = _estimate_clip_tokens(prompt)
+    assert tokens <= 77, f"prompt 估算 {tokens} tokens: {prompt}"
+    # 关键信息必须保留
+    assert "hooded detective" in prompt
+    assert "缝合工" in prompt
+
+
+def test_build_sd_prompt_prioritizes_visual_over_summary():
+    from madne.image.prompts import build_sd_prompt
+
+    scene = SceneOutline(
+        scene_id="s2",
+        summary="中文情节" * 50,
+        setting="雨夜巷子" * 20,
+        visual_prompt="neon alley at night, rain, lone figure",
+    )
+    prompt = build_sd_prompt(scene, [], style="")
+    assert "neon alley" in prompt
+    # 低优先级中文长段不应挤爆预算
+    from madne.image.prompts import _estimate_clip_tokens
+    assert _estimate_clip_tokens(prompt) <= 77
+
+
+def test_clip_small_budget_terminates():
+    """回归：极小预算 + 纯中文文本曾导致 _clip 死循环。"""
+    from madne.image.prompts import _clip, _estimate_clip_tokens
+
+    out = _clip("很长的纯中文角色外观描述" * 10, 2)
+    assert _estimate_clip_tokens(out) <= 2 or out == ""
+    assert _clip("中文" * 5, 0) == ""
+    # 词边界：英文截断不应残留半截词
+    clipped = _clip("hooded detective in a flooded shaft", 3)
+    assert not clipped.endswith(("detectiv", "detect", "hood"))
+
+
+
+def test_diffusers_backend_truncates_oversize_prompt(tmp_path):
+    """CLI/编排层都换了 sd prompt，这里直接验证管线内 tokenizer 兜底。"""
+    gen = DiffusersImageGenerator.__new__(DiffusersImageGenerator)
+    gen.upscale = 0
+    warnings: list[str] = []
+    fake_pipe = type("P", (), {"tokenizer": _FakeTokenizer()})()
+    out = gen._fit_prompt_to_clip(
+        fake_pipe, "word " * 300, warnings
+    )
+    assert out == "trimmed prompt"
+    assert any("77" in w for w in warnings)
+
+    # 未超限时不改写、不告警
+    warnings.clear()
+    out2 = gen._fit_prompt_to_clip(fake_pipe, "short prompt", warnings)
+    assert out2 == "short prompt"
+    assert warnings == []
+
+
+def test_orchestrator_diffusers_uses_sd_prompt(tmp_path):
+    """img_backend=diffusers 时编排层产出的提示词必须在 77 token 内。"""
+    from madne.image.base import ImageResult
+    from madne.image.prompts import _estimate_clip_tokens
+
+    captured: list[str] = []
+
+    class _CaptureClient:
+        backend_name = "diffusers"
+
+        def health(self):
+            return {"backend": "diffusers", "available": True}
+
+        def generate(self, request):  # noqa: ANN001
+            captured.append(request.prompt)
+            target = request.output_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(render_placeholder_png(64, 48, 1))
+            return ImageResult(
+                path=target,
+                backend="diffusers",
+                prompt=request.prompt,
+                negative_prompt="",
+                seed=request.seed,
+                width=request.width,
+                height=request.height,
+                consistency_mode=request.consistency_mode,
+                warnings=[],
+            )
+
+    settings = make_settings(tmp_path, img_backend="diffusers")
+    orch = Orchestrator(
+        llm=MockLLMClient(),
+        settings=settings,
+        data_dir=tmp_path,
+    )
+    orch.image_client = _CaptureClient()
+
+    output = orch.run_cycle(
+        PlayerInput(text=CYBERPUNK_INPUT, session_id="sd-prompt-test")
+    )
+    assert output.illustration is not None
+    assert captured, "编排层应向图像客户端提交提示词"
+    for prompt in captured:
+        assert _estimate_clip_tokens(prompt) <= 77, prompt
+
+

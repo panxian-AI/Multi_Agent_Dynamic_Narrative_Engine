@@ -20,6 +20,7 @@ from .image import (
     build_scene_prompt,
     create_image_client,
 )
+from .image.prompts import build_sd_prompt
 from .image.downloads import (
     download_model,
     find_local_checkpoint,
@@ -289,20 +290,22 @@ def image(
         if isinstance(raw_npcs, list)
         else []
     )
-    prompt = build_scene_prompt(scene, world, npcs, settings.img_style)
     prompt_limit = (
         256
         if settings.img_backend
         in {"seedream", "hunyuan", "openai", "openai_compat"}
         else None
     )
-    prompt = build_scene_prompt(
-        scene,
-        world,
-        npcs,
-        settings.img_style,
-        max_chars=prompt_limit,
-    )
+    if settings.img_backend == "diffusers":
+        prompt = build_sd_prompt(scene, npcs, settings.img_style)
+    else:
+        prompt = build_scene_prompt(
+            scene,
+            world,
+            npcs,
+            settings.img_style,
+            max_chars=prompt_limit,
+        )
     seed = settings.img_seed
     if seed is None:
         seed = int(

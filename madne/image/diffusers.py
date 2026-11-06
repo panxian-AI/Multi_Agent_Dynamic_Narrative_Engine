@@ -22,6 +22,42 @@ from .downloads import (
 )
 
 
+def _available_ram_gb() -> float | None:
+    """返回系统可用物理内存（GB）；查询失败返回 None（不阻塞生成）。"""
+    try:  # Windows
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemStatus()
+        status.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        ):
+            return status.ullAvailPhys / (1024**3)
+    except Exception:
+        pass
+    try:  # Linux / macOS
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024**2)
+    except Exception:
+        pass
+    return None
+
+
 class DiffusersImageGenerator:
     """本地 GPU 推理；模型权重懒加载到 ``MODEL_CACHE_DIR``。
 
@@ -153,6 +189,37 @@ class DiffusersImageGenerator:
             return f" · hires {self.upscale}x（底图≤512 二次采样）"
         return ""
 
+    def _fit_prompt_to_clip(        self, pipe: Any, prompt: str, warnings: list[str]
+    ) -> str:
+        """CLIP 上下文只有 77 token：超限时用真实 tokenizer 截断并告警。
+
+        SD 类模型会把超出部分直接丢弃（最重要的收尾标签最先被截掉），
+        这里显式截断至少能让"保留哪些"可控，并让用户从 warnings 得知。
+        """
+        tokenizer = getattr(pipe, "tokenizer", None)
+        if tokenizer is None:
+            return prompt
+        try:
+            ids = tokenizer(
+                prompt, add_special_tokens=True, truncation=False
+            ).input_ids
+        except Exception:
+            return prompt
+        max_len = int(getattr(tokenizer, "model_max_length", 0) or 77)
+        if len(ids) <= max_len:
+            return prompt
+        try:
+            kept = tokenizer.decode(
+                ids[: max_len - 1], skip_special_tokens=True
+            ).strip()
+        except Exception:
+            kept = prompt[: 4 * max_len]
+        warnings.append(
+            f"提示词 {len(ids)} tokens 超出 CLIP {max_len} token 上限，"
+            "已截断（超出部分不参与生图）；建议压缩场景描述"
+        )
+        return kept or prompt
+
     def _has_local_checkpoint(self) -> bool:
         return (
             self.local_checkpoint is not None
@@ -164,13 +231,15 @@ class DiffusersImageGenerator:
         pipe, device, torch_module = self._pipeline_or_raise(request.on_status)
         warnings: list[str] = []
 
+        prompt_text = self._fit_prompt_to_clip(pipe, request.prompt, warnings)
+
         target_w, target_h = int(request.width), int(request.height)
         base_w, base_h = self._base_size(target_w, target_h)
 
         # CUDA 需要 CUDA generator；MPS/CPU 使用 CPU generator。
         generator_device = "cuda" if device.type == "cuda" else "cpu"
         kwargs: dict[str, Any] = {
-            "prompt": request.prompt,
+            "prompt": prompt_text,
             "negative_prompt": request.negative_prompt,
             "width": base_w,
             "height": base_h,
@@ -257,6 +326,7 @@ class DiffusersImageGenerator:
                 torch_module,
                 kwargs.get("ip_adapter_image"),
                 warnings,
+                prompt_text,
             )
 
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +373,7 @@ class DiffusersImageGenerator:
         torch_module: Any,
         ip_adapter_image: Any,
         warnings: list[str],
+        prompt: str,
     ) -> Any:
         """img2img 二次采样：低强度重绘放大图，补出细节。"""
         try:
@@ -333,7 +404,7 @@ class DiffusersImageGenerator:
         )
 
         kwargs: dict[str, Any] = {
-            "prompt": request.prompt,
+            "prompt": prompt,
             "negative_prompt": request.negative_prompt,
             "image": init_image,
             "strength": self.hires_strength,
@@ -432,6 +503,16 @@ class DiffusersImageGenerator:
             )
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # 加载 2.5GB 级权重需要约 4-5GB 可用内存峰值；不足时 from_single_file
+        # 会抛 MemoryError（常表现为空异常消息），这里预检并给出明确指引。
+        available_gb = _available_ram_gb()
+        if available_gb is not None and available_gb < 3.5:
+            raise ImageGenError(
+                f"系统可用内存仅 {available_gb:.1f} GB，不足以加载 "
+                "SD 权重（约需 4-5 GB 峰值）。请关闭占内存的程序"
+                "（如大型游戏、浏览器）后重试，或改用云端图像后端。"
+            )
 
         # 本地单文件（sd_turbo.safetensors 等）：不联网、不用 diffusers 缓存。
         if self._has_local_checkpoint():
@@ -561,7 +642,8 @@ class DiffusersImageGenerator:
             )
         except Exception as exc:
             raise ImageGenError(
-                f"加载本地单文件模型失败（{checkpoint}）：{exc}。"
+                f"加载本地单文件模型失败（{checkpoint}）："
+                f"{type(exc).__name__}: {exc or '(无异常消息)'}。"
                 "若缺少管线配置，请先执行 `madne models download`，"
                 "或设置 IMG_MODEL_PATH 指向有效的权重文件。"
             ) from exc

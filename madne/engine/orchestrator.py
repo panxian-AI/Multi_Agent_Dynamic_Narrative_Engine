@@ -32,7 +32,7 @@ from ..image import (
     create_image_client,
 )
 from ..image.consistency import compute_metrics
-from ..image.prompts import select_involved_npcs
+from ..image.prompts import build_sd_prompt, select_involved_npcs
 from ..llm import LLMClient, create_llm_client
 from ..memory import MemorySystem
 from ..models import (
@@ -784,13 +784,22 @@ class Orchestrator:
             }
             else None
         )
-        prompt = build_scene_prompt(
-            scene,
-            world,
-            profiles,
-            self.settings.img_style,
-            max_chars=prompt_limit,
-        )
+        if self.settings.img_backend == "diffusers":
+            # SD 类本地模型 CLIP 只有 77 token：按优先级预算组装，
+            # 否则角色外观 / 风格标签会被静默截掉。
+            prompt = build_sd_prompt(
+                scene,
+                involved,
+                self.settings.img_style,
+            )
+        else:
+            prompt = build_scene_prompt(
+                scene,
+                world,
+                profiles,
+                self.settings.img_style,
+                max_chars=prompt_limit,
+            )
         requested_mode = (
             self.settings.img_consistency_mode or "self_attn"
         ).strip().lower()
