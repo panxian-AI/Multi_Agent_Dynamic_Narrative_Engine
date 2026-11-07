@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "madne"
-version = "0.1.0"
+version = "2.0.6"
 description = "Multi-Agent Dynamic Narrative Engine - 多 Agent 动态叙事引擎"
 readme = "README.md"
 requires-python = ">=3.11"
